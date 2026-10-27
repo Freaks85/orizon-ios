@@ -1,0 +1,7 @@
+*.xcodeproj
+build/
+Payload/
+*.ipa
+.DS_Store
+xcuserdata/
+Orizon/Info.plist

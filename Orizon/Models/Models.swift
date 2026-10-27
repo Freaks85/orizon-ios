@@ -1,0 +1,96 @@
+import Foundation
+
+/// A manga as shown in lists and grids.
+struct MangaSummary: Codable, Hashable, Identifiable {
+    /// The site slug (e.g. "chainsaw-man"), used in every URL.
+    let slug: String
+    var title: String
+    var cover: URL?
+    var subtitle: String?
+
+    var id: String { slug }
+}
+
+struct MangaDetails: Codable, Hashable {
+    let slug: String
+    var title: String
+    var altTitles: [String]
+    var cover: URL?
+    var banner: URL?
+    var description: String
+    var status: String
+    var authors: [String]
+    var artists: [String]
+    var genres: [String]
+    var isAdult: Bool
+
+    var summary: MangaSummary {
+        MangaSummary(slug: slug, title: title, cover: cover, subtitle: nil)
+    }
+}
+
+struct Chapter: Codable, Hashable, Identifiable {
+    let id: String
+    var number: String
+    var title: String?
+    var date: Date?
+    var premiumUntil: Date?
+
+    var numberValue: Double { Double(number) ?? 0 }
+
+    var isPremium: Bool {
+        guard let premiumUntil else { return false }
+        return premiumUntil > Date()
+    }
+
+    var displayName: String {
+        if let title, !title.isEmpty {
+            return "Chapitre \(number) – \(title)"
+        }
+        return "Chapitre \(number)"
+    }
+}
+
+struct Page: Codable, Hashable {
+    var url: URL
+    var width: Double?
+    var height: Double?
+
+    var aspectRatio: Double? {
+        guard let width, let height, width > 0, height > 0 else { return nil }
+        return width / height
+    }
+}
+
+struct PagedResult<T> {
+    var items: [T]
+    var hasNextPage: Bool
+}
+
+enum SortOrder: String, CaseIterable, Identifiable {
+    case popularity, newest, rating, title
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .popularity: return "Popularité"
+        case .newest: return "Plus récents"
+        case .rating: return "Note"
+        case .title: return "Titre"
+        }
+    }
+}
+
+enum MangaStatus {
+    static func label(_ raw: String?) -> String {
+        switch (raw ?? "").uppercased() {
+        case "RELEASING", "ONGOING": return "En cours"
+        case "FINISHED": return "Terminé"
+        case "HIATUS", "ON HIATUS": return "En pause"
+        case "CANCELLED": return "Annulé"
+        case "NOT_YET_RELEASED", "UPCOMING": return "À venir"
+        default: return "Inconnu"
+        }
+    }
+}
