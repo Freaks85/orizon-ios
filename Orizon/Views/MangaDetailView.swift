@@ -208,7 +208,78 @@ struct MangaDetailView: View {
                       systemImage: library.contains(manga.slug) ? "bookmark.fill" : "bookmark")
             }
             .buttonStyle(PillButtonStyle(prominent: false))
+
+            downloadMenu
         }
+    }
+
+    private var unreadToDownload: [Chapter] {
+        chapters.filter { !library.isRead($0.id, slug: manga.slug) && !$0.isPremium && !downloads.isDownloaded($0.id) }
+    }
+
+    private var allToDownload: [Chapter] {
+        chapters.filter { !$0.isPremium && !downloads.isDownloaded($0.id) }
+    }
+
+    private var activeJobs: Int {
+        downloads.jobs.filter { $0.manga.slug == manga.slug }.count
+    }
+
+    private var downloadMenu: some View {
+        Menu {
+            let unread = unreadToDownload
+            Button {
+                downloads.enqueue(unread, manga: summary)
+            } label: {
+                Label("Tous les non lus (\(unread.count))", systemImage: "arrow.down.circle")
+            }
+            .disabled(unread.isEmpty)
+
+            Button {
+                let next = unread.sorted { $0.numberValue < $1.numberValue }.prefix(10)
+                downloads.enqueue(Array(next), manga: summary)
+            } label: {
+                Label("Les 10 prochains non lus", systemImage: "10.circle")
+            }
+            .disabled(unread.isEmpty)
+
+            Button {
+                downloads.enqueue(allToDownload, manga: summary)
+            } label: {
+                Label("Tout le manga (\(allToDownload.count))", systemImage: "arrow.down.to.line.circle")
+            }
+            .disabled(allToDownload.isEmpty)
+
+            if activeJobs > 0 {
+                Divider()
+                Button(role: .destructive) {
+                    for job in downloads.jobs where job.manga.slug == manga.slug { downloads.cancel(job.id) }
+                } label: {
+                    Label("Annuler les téléchargements (\(activeJobs))", systemImage: "xmark.circle")
+                }
+            }
+            if chapters.contains(where: { downloads.isDownloaded($0.id) }) {
+                Divider()
+                Button(role: .destructive) {
+                    downloads.deleteAll(slug: manga.slug)
+                } label: {
+                    Label("Supprimer les chapitres téléchargés", systemImage: "trash")
+                }
+            }
+        } label: {
+            ZStack {
+                Circle().fill(Theme.surfaceHigh)
+                if activeJobs > 0 {
+                    ProgressView().tint(Theme.pink)
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 44, height: 44)
+        }
+        .disabled(chapters.isEmpty)
     }
 
     /// The chapter in progress, else the first unread one (oldest first), else the first chapter.

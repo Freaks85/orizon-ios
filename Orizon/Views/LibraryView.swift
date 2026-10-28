@@ -66,6 +66,12 @@ struct LibraryView: View {
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
+                            Button {
+                                let unread = entry.chapters.filter { !library.isRead($0.id, slug: entry.manga.slug) }
+                                downloads.enqueue(unread, manga: entry.manga)
+                            } label: {
+                                Label("Télécharger les non lus", systemImage: "arrow.down.circle")
+                            }
                             if !entry.newChapterIds.isEmpty {
                                 Button { library.clearNew(slug: entry.manga.slug) } label: {
                                     Label("Effacer les nouveautés", systemImage: "checkmark")
