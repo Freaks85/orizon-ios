@@ -17,6 +17,8 @@ struct ReadingProgress: Codable, Hashable {
     var pageIndex: Int
     var pageCount: Int
     var updatedAt: Date
+    /// Position inside the page (0 = top, 1 = bottom), for tall webtoon strips.
+    var pageOffset: Double?
 }
 
 struct NewChapterItem: Identifiable, Hashable {
@@ -175,7 +177,7 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
-    func saveProgress(manga: MangaSummary, chapter: Chapter, pageIndex: Int, pageCount: Int) {
+    func saveProgress(manga: MangaSummary, chapter: Chapter, pageIndex: Int, pageCount: Int, offset: Double = 0) {
         let chapterChanged = state.progress[manga.slug]?.chapterId != chapter.id
         state.progress[manga.slug] = ReadingProgress(
             manga: manga,
@@ -183,9 +185,10 @@ final class LibraryStore: ObservableObject {
             chapterNumber: chapter.number,
             pageIndex: pageIndex,
             pageCount: pageCount,
-            updatedAt: Date()
+            updatedAt: Date(),
+            pageOffset: offset
         )
-        if pageCount > 0, pageIndex >= pageCount - 1, !isRead(chapter.id, slug: manga.slug) {
+        if pageCount > 0, pageIndex >= pageCount - 1, offset > 0.5, !isRead(chapter.id, slug: manga.slug) {
             setRead(true, chapterIds: [chapter.id], slug: manga.slug)
         } else {
             // Page changes are frequent: debounce them. A new chapter is saved right away.

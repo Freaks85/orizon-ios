@@ -197,8 +197,10 @@ struct MangaDetailView: View {
             Button {
                 if let chapter = continueChapter {
                     let progress = library.progress(for: manga.slug)
-                    let page = progress?.chapterId == chapter.id ? (progress?.pageIndex ?? 0) : 0
-                    reader = ReaderContext(manga: summary, chapters: chapters, startChapterId: chapter.id, startPage: page)
+                    let sameChapter = progress?.chapterId == chapter.id
+                    let page = sameChapter ? (progress?.pageIndex ?? 0) : 0
+                    let offset = sameChapter ? (progress?.pageOffset ?? 0) : 0
+                    reader = ReaderContext(manga: summary, chapters: chapters, startChapterId: chapter.id, startPage: page, startOffset: offset)
                 }
             } label: {
                 Label(continueLabel, systemImage: "book.fill")
@@ -311,8 +313,10 @@ struct MangaDetailView: View {
     private func open(_ chapter: Chapter) {
         guard !chapter.isPremium || downloads.isDownloaded(chapter.id) else { return }
         let progress = library.progress(for: manga.slug)
-        let page = progress?.chapterId == chapter.id ? (progress?.pageIndex ?? 0) : 0
-        reader = ReaderContext(manga: summary, chapters: chapters, startChapterId: chapter.id, startPage: page)
+        let sameChapter = progress?.chapterId == chapter.id
+        let page = sameChapter ? (progress?.pageIndex ?? 0) : 0
+        let offset = sameChapter ? (progress?.pageOffset ?? 0) : 0
+        reader = ReaderContext(manga: summary, chapters: chapters, startChapterId: chapter.id, startPage: page, startOffset: offset)
     }
 
     @ViewBuilder
@@ -398,30 +402,65 @@ struct ChapterRow: View {
 
     var body: some View {
         let read = library.isRead(chapter.id, slug: manga.slug)
+        let progress = library.progress(for: manga.slug)
+        let inProgress = !read && progress?.chapterId == chapter.id
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+            // Status marker: gradient bar = in progress, dot = new, check = read.
+            Group {
+                if inProgress {
+                    Capsule().fill(Theme.gradient).frame(width: 4, height: 34)
+                } else if read {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(Color.white.opacity(0.3))
+                } else if library.isNew(chapter.id, slug: manga.slug) || chapter.isNew {
+                    Circle().fill(Theme.gradient).frame(width: 9, height: 9)
+                } else {
+                    Circle().fill(Color.white.opacity(0.8)).frame(width: 6, height: 6)
+                }
+            }
+            .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    if library.isNew(chapter.id, slug: manga.slug) {
-                        Circle().fill(Theme.gradient).frame(width: 8, height: 8)
-                    }
                     if chapter.isPremium {
                         Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.yellow)
                     }
                     Text(chapter.displayName)
-                        .font(.subheadline.weight(read ? .regular : .semibold))
-                        .foregroundStyle(read ? .secondary : .primary)
+                        .font(.subheadline.weight(read ? .regular : .bold))
+                        .foregroundStyle(read ? Color.white.opacity(0.4) : .white)
                         .lineLimit(1)
                 }
-                if let date = chapter.date {
+                if inProgress, let progress {
+                    HStack(spacing: 8) {
+                        Text("En cours · page \(progress.pageIndex + 1)/\(progress.pageCount)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.pink)
+                        GeometryReader { geo in
+                            let value = progress.pageCount > 0
+                                ? (Double(progress.pageIndex) + (progress.pageOffset ?? 0)) / Double(progress.pageCount)
+                                : 0
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.12))
+                                Capsule().fill(Theme.gradient).frame(width: max(4, geo.size.width * value))
+                            }
+                        }
+                        .frame(width: 70, height: 4)
+                    }
+                } else if read {
+                    Text("Lu" + (chapter.date.map { " · \($0.relative)" } ?? ""))
+                        .font(.caption)
+                        .foregroundStyle(Color.white.opacity(0.3))
+                } else if let date = chapter.date {
                     Text(date.relative)
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()
             downloadIndicator
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder

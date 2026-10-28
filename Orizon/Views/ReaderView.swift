@@ -15,6 +15,15 @@ struct ReaderView: View {
     @State private var showControls = true
     @State private var current: (chapterId: String, page: Int)?
     @State private var scrollTarget: String?
+    @State private var scrollAnchor: UnitPoint = .top
+    @State private var tracker = ScrollTracker()
+
+    /// Remembers what was last saved, so scrolling does not write on every frame.
+    final class ScrollTracker {
+        var chapterId: String?
+        var page = -1
+        var bucket = -1
+    }
 
     struct Segment: Identifiable {
         let chapter: Chapter
@@ -56,7 +65,7 @@ struct ReaderView: View {
 
             if segments.isEmpty {
                 if let error {
-                    ErrorView(message: error) { Task { await start(at: context.startChapterId, page: context.startPage) } }
+                    ErrorView(message: error) { Task { await start(at: context.startChapterId, page: context.startPage, offset: context.startOffset) } }
                 } else {
                     ProgressView().tint(Theme.pink)
                 }
@@ -92,15 +101,40 @@ struct ReaderView: View {
         }
         .statusBarHidden(!showControls)
         .preferredColorScheme(.dark)
-        .task { await start(at: context.startChapterId, page: context.startPage) }
+        .task { await start(at: context.startChapterId, page: context.startPage, offset: context.startOffset) }
     }
 
     private func scroll(_ proxy: ScrollViewProxy, to target: String?) {
         guard let target else { return }
+        let anchor = scrollAnchor
+        // Scroll twice: the list only knows the real row heights once they are laid out.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            proxy.scrollTo(target, anchor: .top)
+            proxy.scrollTo(target, anchor: anchor)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            proxy.scrollTo(target, anchor: anchor)
             scrollTarget = nil
         }
+    }
+
+    private static var safeTop: CGFloat {
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first
+        return window?.safeAreaInsets.top ?? 47
+    }
+
+    /// Anchor that puts the point `offset` (0…1) of a page at the top of the screen.
+    /// scrollTo aligns the item's anchor point with the same point of the viewport,
+    /// so for an item of height h in a viewport of height H: a = offset·h / (h − H).
+    private func anchor(for page: Page, offset: Double) -> UnitPoint {
+        let screen = UIScreen.main.bounds
+        guard offset > 0, let ratio = page.aspectRatio else { return .top }
+        let h = screen.width / ratio
+        let H = screen.height
+        guard h > H else { return .top }
+        let a = offset * h / (h - H)
+        return UnitPoint(x: 0.5, y: min(max(a, 0), 1))
     }
 
     // MARK: - Rows
@@ -110,6 +144,13 @@ struct ReaderView: View {
         switch item {
         case .page(let chapter, let index, let count, let page):
             ReaderPage(page: page)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.onChange(of: geo.frame(in: .global).minY) { minY in
+                            track(chapter: chapter, index: index, count: count, minY: minY, height: geo.size.height)
+                        }
+                    }
+                )
                 .onAppear { pageAppeared(chapter: chapter, index: index, count: count) }
         case .divider(let finished, let next):
             VStack(spacing: 10) {
@@ -146,6 +187,8 @@ struct ReaderView: View {
             .padding(.vertical, 40)
             .background(Theme.background)
             .onAppear {
+                // Reaching the end marker means the chapter was read to the end.
+                library.setRead(true, chapterIds: [finished.id], slug: context.manga.slug)
                 if let next, !segments.contains(where: { $0.chapter.id == next.id }) {
                     Task { await appendNext() }
                 }
@@ -191,7 +234,7 @@ struct ReaderView: View {
             HStack(spacing: 16) {
                 Button {
                     if let chapter = currentChapter, let previous = chapterBefore(chapter) {
-                        Task { await start(at: previous.id, page: 0) }
+                        Task { await start(at: previous.id, page: 0, offset: 0) }
                     }
                 } label: {
                     Image(systemName: "chevron.left.2").frame(width: 44, height: 44)
@@ -209,7 +252,7 @@ struct ReaderView: View {
 
                 Button {
                     if let chapter = currentChapter, let next = chapterAfter(chapter) {
-                        Task { await start(at: next.id, page: 0) }
+                        Task { await start(at: next.id, page: 0, offset: 0) }
                     }
                 } label: {
                     Image(systemName: "chevron.right.2").frame(width: 44, height: 44)
@@ -244,20 +287,19 @@ struct ReaderView: View {
         return try await AniverseAPI.shared.pages(slug: context.manga.slug, chapterId: chapter.id)
     }
 
-    private func start(at chapterId: String, page: Int) async {
+    private func start(at chapterId: String, page: Int, offset: Double) async {
         guard let chapter = context.chapters.first(where: { $0.id == chapterId }) else { return }
         error = nil
         library.addIfNeeded(context.manga, chapters: context.chapters)
         do {
             let pages = try await loadPages(for: chapter)
+            let index = max(0, min(page, pages.count - 1))
+            tracker = ScrollTracker()
             segments = [Segment(chapter: chapter, pages: pages)]
-            current = (chapter.id, min(page, pages.count - 1))
-            prefetch(pages, from: page)
-            if page > 0 {
-                scrollTarget = "\(chapter.id)#\(min(page, pages.count - 1))"
-            } else {
-                scrollTarget = "\(chapter.id)#0"
-            }
+            current = (chapter.id, index)
+            prefetch(pages, from: index)
+            scrollAnchor = anchor(for: pages[index], offset: offset)
+            scrollTarget = "\(chapter.id)#\(index)"
         } catch {
             self.error = error.localizedDescription
         }
@@ -279,10 +321,26 @@ struct ReaderView: View {
         }
     }
 
-    private func pageAppeared(chapter: Chapter, index: Int, count: Int) {
-        current = (chapter.id, index)
-        library.saveProgress(manga: context.manga, chapter: chapter, pageIndex: index, pageCount: count)
+    /// Called while scrolling: the page crossing the top of the screen is the one being read,
+    /// and the part of it already above the top is the position inside that page.
+    private func track(chapter: Chapter, index: Int, count: Int, minY: CGFloat, height: CGFloat) {
+        guard height > 0, scrollTarget == nil else { return }
+        let topLine: CGFloat = showControls ? Self.safeTop + 1 : 1
+        guard minY <= topLine, minY + height > topLine else { return }
+        let offset = Double(min(max((topLine - minY) / height, 0), 1))
+        let bucket = Int(offset * 25)
 
+        if tracker.chapterId != chapter.id || tracker.page != index {
+            current = (chapter.id, index)
+        }
+        guard tracker.chapterId != chapter.id || tracker.page != index || tracker.bucket != bucket else { return }
+        tracker.chapterId = chapter.id
+        tracker.page = index
+        tracker.bucket = bucket
+        library.saveProgress(manga: context.manga, chapter: chapter, pageIndex: index, pageCount: count, offset: offset)
+    }
+
+    private func pageAppeared(chapter: Chapter, index: Int, count: Int) {
         if let segment = segments.first(where: { $0.chapter.id == chapter.id }) {
             prefetch(segment.pages, from: index + 1)
         }

@@ -6,6 +6,7 @@ struct ReaderContext: Identifiable {
     var chapters: [Chapter]
     var startChapterId: String
     var startPage: Int = 0
+    var startOffset: Double = 0
 
     var id: String { startChapterId }
 }
@@ -392,7 +393,7 @@ struct HistoryRow: View {
             chapters = downloads.downloaded.values.filter { $0.manga.slug == slug }.map(\.chapter)
         }
         if chapters.contains(where: { $0.id == item.chapterId }) {
-            reader = ReaderContext(manga: item.manga, chapters: chapters, startChapterId: item.chapterId, startPage: item.pageIndex)
+            reader = ReaderContext(manga: item.manga, chapters: chapters, startChapterId: item.chapterId, startPage: item.pageIndex, startOffset: item.pageOffset ?? 0)
             return
         }
         opening = slug
@@ -400,7 +401,7 @@ struct HistoryRow: View {
             defer { opening = nil }
             do {
                 let fresh = try await AniverseAPI.shared.chapters(slug: slug)
-                reader = ReaderContext(manga: item.manga, chapters: fresh, startChapterId: item.chapterId, startPage: item.pageIndex)
+                reader = ReaderContext(manga: item.manga, chapters: fresh, startChapterId: item.chapterId, startPage: item.pageIndex, startOffset: item.pageOffset ?? 0)
             } catch {
                 self.error = error.localizedDescription
             }
