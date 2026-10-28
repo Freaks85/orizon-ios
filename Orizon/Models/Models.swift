@@ -80,6 +80,8 @@ struct Chapter: Codable, Hashable, Identifiable {
     var title: String?
     var date: Date?
     var premiumUntil: Date?
+    /// Small preview image of the chapter (first page), when the site provides one.
+    var thumbnail: URL? = nil
 
     var numberValue: Double { Double(number) ?? 0 }
 

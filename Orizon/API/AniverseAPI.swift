@@ -203,7 +203,8 @@ final class AniverseAPI {
                 number: number,
                 title: title?.isEmpty == true ? nil : title,
                 date: (item["updatedAt"] as? String).flatMap(isoFormatter.date(from:)),
-                premiumUntil: (item["premiumUntil"] as? String).flatMap(isoFormatter.date(from:))
+                premiumUntil: (item["premiumUntil"] as? String).flatMap(isoFormatter.date(from:)),
+                thumbnail: (item["previewImage"] as? String).flatMap(URL.init(string:))
             ))
         }
         return chapters.sorted { $0.numberValue > $1.numberValue }

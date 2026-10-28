@@ -14,6 +14,7 @@ struct ReaderView: View {
     @State private var error: String?
     @State private var showControls = true
     @State private var showChapterPicker = false
+    @State private var showDetails = false
     @State private var current: (chapterId: String, page: Int)?
     @State private var scrollTarget: String?
     @State private var scrollAnchor: UnitPoint = .top
@@ -102,6 +103,18 @@ struct ReaderView: View {
             }
         }
         .sheet(isPresented: $showChapterPicker) { chapterPicker }
+        .sheet(isPresented: $showDetails) {
+            NavigationStack {
+                MangaDetailView(manga: context.manga)
+                    .navigationDestination(for: MangaSummary.self) { MangaDetailView(manga: $0) }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Fermer") { showDetails = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
+        }
         .statusBarHidden(!showControls)
         .preferredColorScheme(.dark)
         .task { await start(at: context.startChapterId, page: context.startPage, offset: context.startOffset) }
@@ -216,19 +229,24 @@ struct ReaderView: View {
                     .font(.headline)
                     .frame(width: 40, height: 40)
             }
-            MangaCover(url: context.manga.cover, cornerRadius: 6)
-                .frame(width: 30)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(context.manga.title)
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(1)
-                if let chapter = currentChapter {
-                    Text(chapter.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .lineLimit(1)
+            Button { showDetails = true } label: {
+                HStack(spacing: 10) {
+                    MangaCover(url: context.manga.cover, cornerRadius: 6)
+                        .frame(width: 30)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(context.manga.title)
+                            .font(.subheadline.weight(.bold))
+                            .lineLimit(1)
+                        if let chapter = currentChapter {
+                            Text(chapter.displayName)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.6))
+                                .lineLimit(1)
+                        }
+                    }
                 }
             }
+            .buttonStyle(.plain)
             Spacer(minLength: 6)
             if let current, let segment = segments.first(where: { $0.chapter.id == current.chapterId }) {
                 Text("\(current.page + 1) / \(segment.pages.count)")
@@ -330,43 +348,62 @@ struct ReaderView: View {
     }
 
     private var chapterPicker: some View {
-        NavigationStack {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Chapitres")
+                        .font(.system(size: 26, weight: .heavy))
+                        .fontWidth(.condensed)
+                    Text("\(context.chapters.count) chapitres publiés · \(context.manga.title)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button { showChapterPicker = false } label: {
+                    Image(systemName: "xmark")
+                        .font(.headline)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color.white.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(20)
+
+            Divider().overlay(Color.white.opacity(0.08))
+
             ScrollViewReader { proxy in
-                List(context.chapters) { chapter in
-                    Button {
-                        showChapterPicker = false
-                        Task { await start(at: chapter.id, page: 0, offset: 0) }
-                    } label: {
-                        HStack {
-                            Text(chapter.displayName)
-                                .foregroundStyle(library.isRead(chapter.id, slug: context.manga.slug) ? Color.white.opacity(0.4) : .white)
-                                .fontWeight(chapter.id == currentChapter?.id ? .bold : .regular)
-                                .lineLimit(1)
-                            Spacer()
-                            if chapter.id == currentChapter?.id {
-                                Image(systemName: "book.fill").foregroundStyle(Theme.pink)
-                            } else if downloads.isDownloaded(chapter.id) {
-                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary)
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(context.chapters) { chapter in
+                            Button {
+                                showChapterPicker = false
+                                Task { await start(at: chapter.id, page: 0, offset: 0) }
+                            } label: {
+                                ChapterCard(
+                                    chapter: chapter,
+                                    isCurrent: chapter.id == currentChapter?.id,
+                                    isRead: library.isRead(chapter.id, slug: context.manga.slug),
+                                    isDownloaded: downloads.isDownloaded(chapter.id)
+                                )
                             }
+                            .buttonStyle(.plain)
+                            .disabled(chapter.isPremium && !downloads.isDownloaded(chapter.id))
+                            .id(chapter.id)
                         }
                     }
-                    .id(chapter.id)
-                    .disabled(chapter.isPremium && !downloads.isDownloaded(chapter.id))
+                    .padding(16)
                 }
-                .listStyle(.plain)
                 .onAppear {
-                    if let id = currentChapter?.id { proxy.scrollTo(id, anchor: .center) }
-                }
-            }
-            .navigationTitle("Chapitres")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Fermer") { showChapterPicker = false }
+                    if let id = currentChapter?.id {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { proxy.scrollTo(id, anchor: .center) }
+                    }
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .background(Theme.background)
+        .presentationDetents([.large, .medium])
+        .presentationDragIndicator(.visible)
         .preferredColorScheme(.dark)
     }
 
@@ -505,5 +542,91 @@ struct ReaderPage: View {
                 failed = true
             }
         }
+    }
+}
+
+/// Chapter card for the reader's chapter picker, in the style of aniverse.fr.
+struct ChapterCard: View {
+    let chapter: Chapter
+    let isCurrent: Bool
+    let isRead: Bool
+    let isDownloaded: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Color.clear
+                .frame(width: 112, height: 84)
+                .overlay {
+                    if let thumbnail = chapter.thumbnail {
+                        RemoteImage(url: thumbnail)
+                    } else {
+                        ZStack {
+                            Theme.surfaceHigh
+                            Text(chapter.number)
+                                .font(.title2.weight(.heavy))
+                                .foregroundStyle(Theme.gradient)
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(alignment: .bottomTrailing) {
+                    if isDownloaded {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .padding(5)
+                    }
+                }
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("Chapitre \(chapter.number)")
+                        .font(.headline.weight(.bold))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if isCurrent {
+                        Text("Lecture en cours")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Theme.purple.opacity(0.35)))
+                    } else if isRead {
+                        Label("Lu", systemImage: "checkmark")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    } else if chapter.isPremium {
+                        Image(systemName: "lock.fill").font(.caption).foregroundStyle(.yellow)
+                    } else if chapter.isNew {
+                        Text("NOUVEAU")
+                            .font(.system(size: 10, weight: .heavy))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Theme.gradient))
+                    }
+                }
+                if let title = chapter.title, !title.isEmpty {
+                    Text(title)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if let date = chapter.date {
+                    Text(date.relative)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(isCurrent ? Theme.purple.opacity(0.18) : Theme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(isCurrent ? Theme.pink.opacity(0.6) : Color.white.opacity(0.05))
+        )
+        .opacity(isRead && !isCurrent ? 0.45 : 1)
+        .foregroundStyle(.white)
     }
 }
