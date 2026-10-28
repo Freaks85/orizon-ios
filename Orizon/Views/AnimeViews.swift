@@ -166,6 +166,8 @@ struct AnimeDetailView: View {
     @State private var isLoading = false
     @State private var error: String?
     @State private var playing: PlayerContext?
+    @State private var showExtras = false
+    @State private var showFullSynopsis = false
     @EnvironmentObject private var episodeDownloads: EpisodeDownloads
 
     init(anime: Anime) {
@@ -183,30 +185,47 @@ struct AnimeDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 Color.clear
-                    .frame(height: 260)
-                    .overlay { RemoteImage(url: anime.banner ?? anime.cover) }
+                    .frame(height: 320)
+                    .overlay { RemoteImage(url: headerImage) }
                     .clipped()
-                    .overlay(LinearGradient(colors: [.clear, Theme.background], startPoint: .center, endPoint: .bottom))
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(anime.title)
-                        .font(.system(size: 28, weight: .heavy, design: .rounded))
-                    let tags = [anime.format, anime.status].compactMap { $0 }
-                    if !tags.isEmpty {
-                        Text(tags.joined(separator: " · "))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    .overlay(LinearGradient(
+                        stops: [.init(color: .clear, location: 0.35), .init(color: Theme.background, location: 1)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ))
+                    .overlay(alignment: .bottomLeading) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(anime.title)
+                                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                                .lineLimit(3)
+                                .shadow(color: .black.opacity(0.6), radius: 8)
+                            let tags = [current.format, current.status ?? anime.status].compactMap { $0 }
+                            if !tags.isEmpty {
+                                Text(tags.joined(separator: " · "))
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.8))
+                            }
+                        }
+                        .padding(.horizontal)
                     }
-                    if let synopsis = anime.synopsis {
+
+                if seasons.count > 1 {
+                    seasonPills
+                }
+
+                if let synopsis = anime.synopsis {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(synopsis)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(showFullSynopsis ? nil : 3)
+                        Button(showFullSynopsis ? "Moins" : "Plus") {
+                            withAnimation(.easeInOut(duration: 0.2)) { showFullSynopsis.toggle() }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.pink)
                     }
-                }
-                .padding(.horizontal)
-
-                if seasons.count > 1 {
-                    seasonPicker
+                    .padding(.horizontal)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -242,7 +261,11 @@ struct AnimeDetailView: View {
         .background(Theme.background)
         .navigationBarTitleDisplayMode(.inline)
         .task { if episodes.isEmpty { await load() } }
-        .task { if seasons.isEmpty { seasons = (try? await AniverseAPI.shared.seasons(animeId: anime.id)) ?? [] } }
+        .task {
+            guard seasons.isEmpty else { return }
+            seasons = (try? await AniverseAPI.shared.seasons(animeId: anime.id)) ?? []
+            showExtras = extras.contains { $0.id == current.id }
+        }
         .fullScreenCover(item: $playing) { AnimePlayerView(context: $0) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -264,45 +287,120 @@ struct AnimeDetailView: View {
         }
     }
 
-    private var seasonPicker: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Saisons")
-                .font(.system(size: 22, weight: .heavy))
-                .fontWidth(.condensed)
+    private var headerImage: URL? {
+        current.id == anime.id ? anime.banner ?? anime.cover : current.cover ?? anime.banner ?? anime.cover
+    }
+
+    /// TV seasons are numbered in watching order; films, OVA and specials go in their own tab.
+    private static let mainTypes: Set<String> = ["TV", "TV SHORT", "ONA"]
+    private func isMain(_ season: AnimeSeason) -> Bool { Self.mainTypes.contains((season.type ?? "TV").uppercased()) }
+    private var mainSeasons: [AnimeSeason] { seasons.filter(isMain) }
+    private var extras: [AnimeSeason] { seasons.filter { !isMain($0) } }
+
+    private var seasonPills: some View {
+        let showingExtras = showExtras || mainSeasons.isEmpty
+        let list = showingExtras ? extras : mainSeasons
+        return VStack(alignment: .leading, spacing: 12) {
+            if !mainSeasons.isEmpty && !extras.isEmpty {
+                HStack(spacing: 8) {
+                    kindTab("Saisons", count: mainSeasons.count, selected: !showExtras) { showExtras = false }
+                    kindTab("Films & OVA", count: extras.count, selected: showExtras) { showExtras = true }
+                }
                 .padding(.horizontal)
+            }
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 12) {
-                        ForEach(seasons) { season in
-                            let selected = season.id == current.id
-                            Button { select(season) } label: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    MangaCover(url: season.image, cornerRadius: 10)
-                                        .overlay {
-                                            if selected {
-                                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                    .strokeBorder(Theme.pink, lineWidth: 2)
-                                            }
-                                        }
-                                    Text(season.name)
-                                        .font(.caption.weight(.semibold))
-                                        .lineLimit(2, reservesSpace: true)
-                                    if let type = season.type {
-                                        Text(type).font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(width: 100)
-                                .opacity(selected ? 1 : 0.65)
-                            }
-                            .buttonStyle(.plain)
-                            .id(season.id)
+                    HStack(spacing: 8) {
+                        ForEach(Array(list.enumerated()), id: \.element.id) { index, season in
+                            pill(season, label: showingExtras ? Self.extraLabel(season) : Self.seasonLabel(season.name, fallback: index + 1))
+                                .id(season.id)
                         }
                     }
                     .padding(.horizontal)
                 }
                 .onAppear { proxy.scrollTo(current.id, anchor: .center) }
+                .onChange(of: showExtras) { _ in
+                    withAnimation { proxy.scrollTo(current.id, anchor: .center) }
+                }
             }
         }
+    }
+
+    private func kindTab(_ title: String, count: Int, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { action() }
+        } label: {
+            HStack(spacing: 6) {
+                Text(title).font(.subheadline.weight(.bold))
+                Text("\(count)")
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.white.opacity(selected ? 0.25 : 0.1)))
+            }
+            .foregroundStyle(Color.white.opacity(selected ? 1 : 0.55))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Capsule().strokeBorder(Color.white.opacity(selected ? 0.5 : 0.15)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func pill(_ season: AnimeSeason, label: String) -> some View {
+        let selected = season.id == current.id
+        return Button { select(season) } label: {
+            HStack(spacing: 6) {
+                if let icon = Self.icon(season.type) {
+                    Image(systemName: icon).font(.caption.weight(.bold))
+                }
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .frame(maxWidth: 240)
+            .background {
+                if selected {
+                    Capsule().fill(Theme.gradient)
+                } else {
+                    Capsule().fill(Theme.surfaceHigh)
+                }
+            }
+            .foregroundStyle(Color.white.opacity(selected ? 1 : 0.8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private static func icon(_ type: String?) -> String? {
+        switch (type ?? "").uppercased() {
+        case "MOVIE": return "film"
+        case "OVA", "SPECIAL": return "sparkles"
+        case "MUSIC": return "music.note"
+        default: return nil
+        }
+    }
+
+    /// Uses the number in the name when there is one ("Saison 3 Part 2" → "Saison 3 · Partie 2",
+    /// "Final Season" → "Saison finale"), otherwise the position in watching order.
+    private static func seasonLabel(_ name: String, fallback: Int) -> String {
+        let lower = name.lowercased()
+        var label = "Saison \(fallback)"
+        if lower.contains("final season") || lower.contains("saison finale") {
+            label = "Saison finale"
+        } else if let range = lower.range(of: #"(saison|season)\s*\d+"#, options: .regularExpression) {
+            label = "Saison " + lower[range].filter(\.isNumber)
+        }
+        if let range = lower.range(of: #"(part|partie|cour)\s*\d+"#, options: .regularExpression) {
+            label += " · Partie " + lower[range].filter(\.isNumber)
+        }
+        return label
+    }
+
+    /// "Attack on Titan: No Regrets" → "No Regrets".
+    private static func extraLabel(_ season: AnimeSeason) -> String {
+        let name = season.name.components(separatedBy: ": ").last?.trimmingCharacters(in: .whitespaces) ?? ""
+        return name.isEmpty ? season.name : name
     }
 
     private func row(_ episode: Episode) -> some View {
