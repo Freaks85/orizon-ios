@@ -38,6 +38,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIUserInterfaceStyle: Dark
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
     settings:

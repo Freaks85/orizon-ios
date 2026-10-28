@@ -107,7 +107,7 @@ final class PlayerModel: ObservableObject {
                 let source: URL
                 let subtitles: URL?
                 if let local = EpisodeDownloads.shared.local(animeId: anime.id, language: language, number: number) {
-                    source = local.video
+                    source = try await LocalMediaServer.shared.url(for: local.video, root: EpisodeDownloads.shared.root)
                     subtitles = local.subtitles
                 } else {
                     let stream = try await api.stream(animeId: anime.id, episode: number, language: language)
