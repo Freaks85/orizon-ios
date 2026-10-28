@@ -87,14 +87,23 @@ final class PlayerModel: ObservableObject {
         loadTask = Task {
             let api = AniverseAPI.shared
             do {
-                let stream = try await api.stream(animeId: anime.id, episode: number, language: language)
+                let source: URL
+                let subtitles: URL?
+                if let local = EpisodeDownloads.shared.local(animeId: anime.id, language: language, number: number) {
+                    source = local.video
+                    subtitles = local.subtitles
+                } else {
+                    let stream = try await api.stream(animeId: anime.id, episode: number, language: language)
+                    source = stream.source
+                    // The VF stream carries the same full French subtitles: only show them in VOSTFR.
+                    subtitles = language == .sub ? stream.subtitles : nil
+                }
                 guard !Task.isCancelled else { return }
-                player.replaceCurrentItem(with: AVPlayerItem(url: stream.source))
+                player.replaceCurrentItem(with: AVPlayerItem(url: source))
                 player.play()
                 isLoading = false
 
-                // The VF stream carries the same full French subtitles: only show them in VOSTFR.
-                if language == .sub, let url = stream.subtitles {
+                if let url = subtitles {
                     let loaded = (try? await api.subtitles(url)) ?? []
                     guard !Task.isCancelled else { return }
                     cues = loaded

@@ -11,6 +11,7 @@ struct OrizonApp: App {
             RootView()
                 .environmentObject(library)
                 .environmentObject(downloads)
+                .environmentObject(EpisodeDownloads.shared)
                 .preferredColorScheme(.dark)
                 .tint(Theme.pink)
         }
@@ -52,6 +53,7 @@ enum AppTab: Hashable, CaseIterable {
 struct RootView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var downloads: DownloadManager
+    @EnvironmentObject private var episodeDownloads: EpisodeDownloads
     @State private var tab: AppTab = .home
     @State private var homeMode: HomeMode = .manga
 
@@ -72,7 +74,7 @@ struct RootView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             FloatingTabBar(selection: $tab, badges: [
                 .library: library.newChapterCount,
-                .downloads: downloads.jobs.count
+                .downloads: downloads.jobs.count + episodeDownloads.jobs.count
             ])
         }
         .background(Theme.background)

@@ -152,6 +152,7 @@ struct AnimeDetailView: View {
     @State private var isLoading = false
     @State private var error: String?
     @State private var playing: PlayerContext?
+    @EnvironmentObject private var episodeDownloads: EpisodeDownloads
 
     init(anime: Anime) {
         self.anime = anime
@@ -207,13 +208,7 @@ struct AnimeDetailView: View {
                 .padding(.horizontal)
 
                 ForEach(available) { episode in
-                    Button {
-                        playing = PlayerContext(anime: current, episodes: available, language: language, startEpisode: episode.number)
-                    } label: {
-                        row(episode)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal)
+                    row(episode).padding(.horizontal)
                 }
 
                 if isLoading {
@@ -235,6 +230,24 @@ struct AnimeDetailView: View {
         .task { if episodes.isEmpty { await load() } }
         .task { if seasons.isEmpty { seasons = (try? await AniverseAPI.shared.seasons(animeId: anime.id)) ?? [] } }
         .fullScreenCover(item: $playing) { AnimePlayerView(context: $0) }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        episodeDownloads.enqueue(available, anime: current, language: language)
+                    } label: {
+                        Label("Télécharger les \(available.count) épisodes (\(language.label))", systemImage: "arrow.down.circle")
+                    }
+                } label: {
+                    Image(systemName: "arrow.down.to.line")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(.ultraThinMaterial))
+                }
+                .disabled(available.isEmpty)
+            }
+        }
     }
 
     private var seasonPicker: some View {
@@ -279,30 +292,35 @@ struct AnimeDetailView: View {
     }
 
     private func row(_ episode: Episode) -> some View {
-        HStack(spacing: 14) {
-            Text("\(episode.number)")
-                .font(.headline.monospacedDigit())
-                .frame(minWidth: 44, minHeight: 44)
-                .padding(.horizontal, 4)
-                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surfaceHigh))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Épisode \(episode.number)")
-                    .font(.subheadline.weight(.semibold))
-                if let title = episode.title, title != "Épisode \(episode.number)" {
-                    Text(title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        HStack(spacing: 8) {
+            Button {
+                playing = PlayerContext(anime: current, episodes: available, language: language, startEpisode: episode.number)
+            } label: {
+                HStack(spacing: 14) {
+                    Text("\(episode.number)")
+                        .font(.headline.monospacedDigit())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 4)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surfaceHigh))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Épisode \(episode.number)")
+                            .font(.subheadline.weight(.semibold))
+                        if let title = episode.title, title != "Épisode \(episode.number)" {
+                            Text(title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
+                .contentShape(Rectangle())
             }
-            Spacer()
-            Image(systemName: "play.circle.fill")
-                .font(.title2)
-                .foregroundStyle(Theme.gradient)
+            .buttonStyle(.plain)
+            EpisodeDownloadButton(anime: current, episode: episode, language: language)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.surface))
-        .contentShape(Rectangle())
     }
 
     private func select(_ season: AnimeSeason) {
@@ -333,5 +351,60 @@ struct AnimeDetailView: View {
             self.error = error.localizedDescription
         }
         isLoading = false
+    }
+}
+
+/// Netflix-style download control: arrow, progress ring (tap to stop), then a check mark.
+struct EpisodeDownloadButton: View {
+    let anime: Anime
+    let episode: Episode
+    let language: AnimeLanguage
+    @EnvironmentObject private var downloads: EpisodeDownloads
+    @State private var confirmDelete = false
+
+    private var id: String { EpisodeDownloads.key(anime.id, language, episode.number) }
+
+    var body: some View {
+        Group {
+            if downloads.downloaded[id] != nil {
+                Button { confirmDelete = true } label: {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.pink)
+                }
+                .accessibilityLabel("Téléchargé")
+            } else if let job = downloads.job(id) {
+                if job.error != nil {
+                    Button { downloads.retryFailed() } label: {
+                        Image(systemName: "exclamationmark.arrow.circlepath").foregroundStyle(.orange)
+                    }
+                    .accessibilityLabel("Réessayer le téléchargement")
+                } else {
+                    Button { downloads.cancel(id) } label: {
+                        ZStack {
+                            Circle().stroke(Color.white.opacity(0.15), lineWidth: 3)
+                            Circle()
+                                .trim(from: 0, to: max(job.progress, 0.02))
+                                .stroke(Theme.pink, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                                .animation(.linear(duration: 0.2), value: job.progress)
+                            Image(systemName: "stop.fill").font(.system(size: 9))
+                        }
+                        .frame(width: 26, height: 26)
+                    }
+                    .accessibilityLabel("Arrêter le téléchargement")
+                }
+            } else {
+                Button { downloads.enqueue([episode], anime: anime, language: language) } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .accessibilityLabel("Télécharger l'épisode")
+            }
+        }
+        .font(.title2)
+        .foregroundStyle(.white)
+        .frame(width: 44, height: 44)
+        .buttonStyle(.plain)
+        .confirmationDialog("Supprimer l'épisode \(episode.number) téléchargé ?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Supprimer", role: .destructive) { downloads.delete(id) }
+        }
     }
 }

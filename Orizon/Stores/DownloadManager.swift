@@ -299,7 +299,7 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    private nonisolated static func fetch(_ url: URL, session: URLSession) async throws -> Data {
+    nonisolated static func fetch(_ url: URL, session: URLSession) async throws -> Data {
         var lastError: Error = APIError.parsing("l'image")
         for attempt in 0..<3 {
             do {

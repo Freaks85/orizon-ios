@@ -3,7 +3,9 @@ import SwiftUI
 struct DownloadsView: View {
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var episodes: EpisodeDownloads
     @State private var reader: ReaderContext?
+    @State private var player: PlayerContext?
     @State private var confirmDeleteAll = false
     @State private var deletedMessage: String?
 
@@ -31,6 +33,75 @@ struct DownloadsView: View {
                         }
                         .font(.caption)
                         .textCase(nil)
+                    }
+                    .listRowBackground(Theme.surface)
+                }
+
+                if !episodes.jobs.isEmpty {
+                    Section {
+                        ForEach(episodes.jobs) { job in
+                            EpisodeJobRow(job: job)
+                                .swipeActions {
+                                    Button(role: .destructive) { episodes.cancel(job.id) } label: {
+                                        Label("Annuler", systemImage: "xmark")
+                                    }
+                                }
+                        }
+                    } header: {
+                        HStack {
+                            Text("Épisodes en cours (\(episodes.jobs.count))")
+                            Spacer()
+                            if episodes.jobs.contains(where: { $0.error != nil }) {
+                                Button("Réessayer") { episodes.retryFailed() }
+                            }
+                            Button("Tout annuler", role: .destructive) { episodes.cancelAll() }
+                        }
+                        .font(.caption)
+                        .textCase(nil)
+                    }
+                    .listRowBackground(Theme.surface)
+                }
+
+                ForEach(episodes.byAnime) { group in
+                    Section {
+                        ForEach(group.episodes) { item in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Épisode \(item.episode.number) · \(item.language.label)")
+                                        .font(.subheadline)
+                                    Text(item.byteCount.fileSize)
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer()
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(Theme.gradient)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                let sameVersion = group.episodes.filter { $0.language == item.language }.map(\.episode)
+                                player = PlayerContext(anime: group.anime, episodes: sameVersion, language: item.language, startEpisode: item.episode.number)
+                            }
+                            .swipeActions {
+                                Button(role: .destructive) { episodes.delete(item.id) } label: {
+                                    Label("Supprimer", systemImage: "trash")
+                                }
+                            }
+                        }
+                    } header: {
+                        HStack(spacing: 10) {
+                            MangaCover(url: group.anime.cover, cornerRadius: 4).frame(width: 28)
+                            Text(group.anime.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            Spacer()
+                            Menu {
+                                Button(role: .destructive) { episodes.deleteAll(animeId: group.anime.id) } label: {
+                                    Label("Tout supprimer", systemImage: "trash")
+                                }
+                            } label: { Image(systemName: "ellipsis") }
+                        }
+                        .textCase(nil)
+                        .foregroundStyle(.primary)
                     }
                     .listRowBackground(Theme.surface)
                 }
@@ -77,12 +148,12 @@ struct DownloadsView: View {
                     .listRowBackground(Theme.surface)
                 }
 
-                if downloads.jobs.isEmpty && downloads.downloaded.isEmpty {
+                if downloads.jobs.isEmpty && downloads.downloaded.isEmpty && episodes.jobs.isEmpty && episodes.downloaded.isEmpty {
                     VStack(spacing: 14) {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: 44))
                             .foregroundStyle(Theme.gradient)
-                        Text("Aucun téléchargement.\nGlisse un chapitre vers la gauche ou utilise le menu « … » d'un manga.")
+                        Text("Aucun téléchargement.\nGlisse un chapitre vers la gauche, utilise le menu « … » d'un manga ou la flèche d'un épisode.")
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                     }
@@ -93,13 +164,14 @@ struct DownloadsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .fullScreenCover(item: $player) { AnimePlayerView(context: $0) }
             .scrollContentBackground(.hidden)
             .background(Theme.background)
             .navigationTitle("Téléchargements")
             .toolbar {
-                if !downloads.downloaded.isEmpty {
+                if !downloads.downloaded.isEmpty || !episodes.downloaded.isEmpty {
                     ToolbarItem(placement: .topBarLeading) {
-                        Text(downloads.totalBytes.fileSize).font(.caption).foregroundStyle(.secondary)
+                        Text((downloads.totalBytes + episodes.totalBytes).fileSize).font(.caption).foregroundStyle(.secondary)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
@@ -119,7 +191,10 @@ struct DownloadsView: View {
                 }
             }
             .confirmationDialog("Supprimer tous les téléchargements ?", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
-                Button("Tout supprimer (\(downloads.totalBytes.fileSize))", role: .destructive) { downloads.deleteEverything() }
+                Button("Tout supprimer (\((downloads.totalBytes + episodes.totalBytes).fileSize))", role: .destructive) {
+                    downloads.deleteEverything()
+                    episodes.deleteEverything()
+                }
             }
             .alert(deletedMessage ?? "", isPresented: Binding(get: { deletedMessage != nil }, set: { if !$0 { deletedMessage = nil } })) {
                 Button("OK", role: .cancel) {}
@@ -149,6 +224,28 @@ struct JobRow: View {
                         .foregroundStyle(.tertiary)
                 case .failed(let message):
                     Text(message).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+                }
+            }
+        }
+    }
+}
+
+struct EpisodeJobRow: View {
+    let job: EpisodeDownloads.Job
+
+    var body: some View {
+        HStack(spacing: 12) {
+            MangaCover(url: job.anime.cover, cornerRadius: 4).frame(width: 34)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(job.anime.title).font(.footnote.weight(.semibold)).lineLimit(1)
+                Text("Épisode \(job.episode.number) · \(job.language.label)").font(.caption).foregroundStyle(.secondary)
+                if let error = job.error {
+                    Text(error).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+                } else if job.progress > 0 {
+                    ProgressView(value: job.progress).tint(Theme.pink)
+                    Text("\(Int(job.progress * 100)) %").font(.caption2).foregroundStyle(.tertiary)
+                } else {
+                    Text("En attente").font(.caption2).foregroundStyle(.tertiary)
                 }
             }
         }

@@ -171,7 +171,7 @@ enum MangaStatus {
 
 // MARK: - Anime
 
-struct Anime: Hashable, Identifiable {
+struct Anime: Codable, Hashable, Identifiable {
     let id: String
     let slug: String
     var title: String
@@ -192,14 +192,14 @@ struct Anime: Hashable, Identifiable {
     }
 }
 
-struct Episode: Hashable, Identifiable {
+struct Episode: Codable, Hashable, Identifiable {
     let number: Int
     var title: String?
 
     var id: Int { number }
 }
 
-enum AnimeLanguage: String, CaseIterable, Identifiable {
+enum AnimeLanguage: String, CaseIterable, Identifiable, Codable {
     case sub, dub
 
     var id: String { rawValue }
