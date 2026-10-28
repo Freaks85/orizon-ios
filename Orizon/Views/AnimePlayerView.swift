@@ -110,7 +110,9 @@ final class PlayerModel: ObservableObject {
                 }
                 if malId == nil { malId = try? await api.malId(slug: anime.slug) }
                 if let malId {
-                    let loaded = (try? await api.segments(malId: malId, episode: number)) ?? []
+                    let duration = try? await player.currentItem?.asset.load(.duration)
+                    var loaded = (try? await api.skipTimes(malId: malId, episode: number, length: duration?.seconds ?? 0)) ?? []
+                    if loaded.isEmpty { loaded = (try? await api.segments(malId: malId, episode: number)) ?? [] }
                     guard !Task.isCancelled else { return }
                     segments = loaded
                 }
@@ -217,14 +219,14 @@ struct AnimePlayerView: View {
         .onAppear {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             UIApplication.shared.isIdleTimerDisabled = true
-            rotate(.landscape)
+            rotate(to: .landscape, lock: .landscape)
             model.start()
             scheduleHide()
         }
         .onDisappear {
             model.stop()
             UIApplication.shared.isIdleTimerDisabled = false
-            rotate(.portrait)
+            rotate(to: .portrait, lock: AppDelegate.defaultOrientations)
         }
         .sheet(isPresented: $showEpisodes) { episodeList }
     }
@@ -358,6 +360,7 @@ struct AnimePlayerView: View {
         switch segment.label.lowercased() {
         case "opening": return "Passer l'opening"
         case "ending": return "Passer l'ending"
+        case "recap": return "Passer le résumé"
         default: return "Passer"
         }
     }
@@ -377,8 +380,15 @@ struct AnimePlayerView: View {
         }
     }
 
-    private func rotate(_ orientations: UIInterfaceOrientationMask) {
-        guard let scene = UIApplication.shared.connectedScenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene else { return }
+    /// iOS only rotates to orientations the app allows at that moment: lock them first, then ask.
+    private func rotate(to orientations: UIInterfaceOrientationMask, lock: UIInterfaceOrientationMask) {
+        AppDelegate.orientationLock = lock
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+        var controller = scene.keyWindow?.rootViewController
+        while let current = controller {
+            current.setNeedsUpdateOfSupportedInterfaceOrientations()
+            controller = current.presentedViewController
+        }
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { _ in }
     }
 

@@ -345,6 +345,28 @@ extension AniverseAPI {
         }
     }
 
+    /// Opening, ending and recap timings from AniSkip (the source behind Aniverse's segments). Passing the real
+    /// episode length picks the submission made on a matching release, which Aniverse does not do.
+    func skipTimes(malId: Int, episode: Int, length: Double) async throws -> [SkipSegment] {
+        var components = URLComponents(string: "https://api.aniskip.com/v2/skip-times/\(malId)/\(episode)")!
+        components.queryItems = ["op", "ed", "recap", "mixed-op", "mixed-ed"].map { URLQueryItem(name: "types", value: $0) }
+            + [URLQueryItem(name: "episodeLength", value: String(length.isFinite ? Int(length) : 0))]
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let results = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["results"] as? [[String: Any]] ?? []
+        let byType = Dictionary(results.compactMap { result -> (String, SkipSegment)? in
+            guard let type = result["skipType"] as? String,
+                  let interval = result["interval"] as? [String: Any],
+                  let start = interval["startTime"] as? Double,
+                  let end = interval["endTime"] as? Double, end > start else { return nil }
+            let label = type.hasSuffix("op") ? "Opening" : type.hasSuffix("ed") ? "Ending" : "Recap"
+            return (type, SkipSegment(start: start, end: end, label: label))
+        }, uniquingKeysWith: { first, _ in first })
+        // A plain opening/ending wins over its "mixed" variant (credits over the story).
+        return [byType["recap"], byType["op"] ?? byType["mixed-op"], byType["ed"] ?? byType["mixed-ed"]]
+            .compactMap { $0 }
+            .sorted { $0.start < $1.start }
+    }
+
     /// Number of episodes available in each version (fresher than the search counts).
     func episodeCounts(animeId: String) async throws -> (sub: Int, dub: Int) {
         let json = try await getJSON("api/anime/\(animeId)/episode-numbers")

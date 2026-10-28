@@ -1,7 +1,18 @@
 import SwiftUI
 
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    static let defaultOrientations: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
+    /// Narrowed to landscape while the video player is open.
+    static var orientationLock = defaultOrientations
+
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        Self.orientationLock
+    }
+}
+
 @main
 struct OrizonApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var library = LibraryStore()
     @StateObject private var downloads = DownloadManager()
     @Environment(\.scenePhase) private var scenePhase
