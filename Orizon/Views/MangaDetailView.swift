@@ -112,10 +112,15 @@ struct MangaDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 16) {
             ZStack(alignment: .bottomLeading) {
-                RemoteImage(url: details?.banner ?? summary.cover)
+                // Color.clear takes the proposed width; the image fills it without
+                // widening the row (a .fill image alone would overflow the screen).
+                Color.clear
                     .frame(height: 230)
                     .frame(maxWidth: .infinity)
-                    .blur(radius: details?.banner == nil ? 24 : 0)
+                    .overlay {
+                        RemoteImage(url: details?.banner ?? summary.cover)
+                            .blur(radius: details?.banner == nil ? 24 : 0)
+                    }
                     .clipped()
                     .overlay(
                         LinearGradient(colors: [.clear, Theme.background], startPoint: .center, endPoint: .bottom)
