@@ -173,6 +173,22 @@ struct HomeView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private func section<Destination: View>(_ title: String, items: [MangaSummary], @ViewBuilder destination: @escaping () -> Destination) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: title) {
+                    NavigationLink {
+                        destination()
+                    } label: {
+                        Text("Tout voir").font(.subheadline).foregroundStyle(Theme.pink)
+                    }
+                }
+                MangaRow(mangas: items)
+            }
+        }
+    }
 }
 
 /// All recently updated mangas as release cards, with infinite scrolling.
@@ -214,23 +230,6 @@ struct ReleasesScreen: View {
         .overlay { if opening { ProgressView().tint(Theme.pink) } }
         .fullScreenCover(item: $reader) { ReaderView(context: $0) }
         .task { if loader.items.isEmpty { await loader.loadMore() } }
-    }
-}
-
-    @ViewBuilder
-    private func section<Destination: View>(_ title: String, items: [MangaSummary], @ViewBuilder destination: @escaping () -> Destination) -> some View {
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: title) {
-                    NavigationLink {
-                        destination()
-                    } label: {
-                        Text("Tout voir").font(.subheadline).foregroundStyle(Theme.pink)
-                    }
-                }
-                MangaRow(mangas: items)
-            }
-        }
     }
 }
 
