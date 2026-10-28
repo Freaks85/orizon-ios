@@ -59,6 +59,43 @@ final class DownloadManager: ObservableObject {
 
     init() {
         downloaded = Persistence.load([String: DownloadedChapter].self, from: indexName) ?? [:]
+        Task { await recoverOrphans() }
+    }
+
+    /// Re-indexes chapter folders that exist on disk but are missing from the index
+    /// (e.g. after the index could not be read), using the site to name them again.
+    func recoverOrphans() async {
+        let fm = FileManager.default
+        guard let slugs = try? fm.contentsOfDirectory(atPath: root.path) else { return }
+        for slug in slugs where !slug.hasPrefix(".") {
+            let mangaDir = root.appendingPathComponent(slug, isDirectory: true)
+            guard let chapterIds = try? fm.contentsOfDirectory(atPath: mangaDir.path) else { continue }
+            let orphans = chapterIds.filter { !$0.hasPrefix(".") && downloaded[$0] == nil && job(for: $0) == nil }
+            guard !orphans.isEmpty,
+                  let result = try? await AniverseAPI.shared.manga(slug: slug) else { continue }
+            let (details, chapters) = result
+            for chapterId in orphans {
+                guard let chapter = chapters.first(where: { $0.id == chapterId }) else { continue }
+                let dir = mangaDir.appendingPathComponent(chapterId, isDirectory: true)
+                let files = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
+                    .filter { !$0.hasPrefix(".") }
+                    .sorted()
+                guard !files.isEmpty else { continue }
+                let bytes = files.reduce(Int64(0)) { total, file in
+                    let attributes = try? fm.attributesOfItem(atPath: dir.appendingPathComponent(file).path)
+                    return total + ((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
+                }
+                downloaded[chapterId] = DownloadedChapter(
+                    manga: details.summary,
+                    chapter: chapter,
+                    pageFiles: files,
+                    pages: files.map { Page(url: dir.appendingPathComponent($0)) },
+                    downloadedAt: Date(),
+                    byteCount: bytes
+                )
+            }
+        }
+        saveIndex()
     }
 
     // MARK: - Queries

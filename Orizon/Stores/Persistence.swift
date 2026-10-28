@@ -12,7 +12,14 @@ enum Persistence {
     static func load<T: Decodable>(_ type: T.Type, from name: String) -> T? {
         let url = directory.appendingPathComponent(name)
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            // Keep the unreadable file instead of letting the next save overwrite it.
+            let backup = directory.appendingPathComponent("\(name).\(Int(Date().timeIntervalSince1970)).bak")
+            try? FileManager.default.copyItem(at: url, to: backup)
+            return nil
+        }
     }
 
     static func save<T: Encodable>(_ value: T, to name: String) {

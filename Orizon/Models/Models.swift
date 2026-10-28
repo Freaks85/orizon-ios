@@ -32,6 +32,28 @@ struct MangaSummary: Codable, Hashable, Identifiable {
     }
 }
 
+// Decoding written by hand so that fields added in later versions are optional:
+// an older save file must never fail to load (a failure would reset the library).
+extension MangaSummary {
+    enum CodingKeys: String, CodingKey {
+        case slug, title, cover, subtitle, banner, synopsis, status, kind, country, latestChapters
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slug = try c.decode(String.self, forKey: .slug)
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? slug
+        cover = try? c.decodeIfPresent(URL.self, forKey: .cover)
+        subtitle = try? c.decodeIfPresent(String.self, forKey: .subtitle)
+        banner = try? c.decodeIfPresent(URL.self, forKey: .banner)
+        synopsis = try? c.decodeIfPresent(String.self, forKey: .synopsis)
+        status = try? c.decodeIfPresent(String.self, forKey: .status)
+        kind = try? c.decodeIfPresent(String.self, forKey: .kind)
+        country = try? c.decodeIfPresent(String.self, forKey: .country)
+        latestChapters = (try? c.decodeIfPresent([Chapter].self, forKey: .latestChapters)) ?? []
+    }
+}
+
 struct MangaDetails: Codable, Hashable {
     let slug: String
     var title: String
