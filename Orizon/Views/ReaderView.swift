@@ -13,6 +13,7 @@ struct ReaderView: View {
     @State private var loadingNext = false
     @State private var error: String?
     @State private var showControls = true
+    @State private var showChapterPicker = false
     @State private var current: (chapterId: String, page: Int)?
     @State private var scrollTarget: String?
     @State private var scrollAnchor: UnitPoint = .top
@@ -90,7 +91,8 @@ struct ReaderView: View {
                     // so onChange does not fire for it: handle it on appear.
                     .onAppear { scroll(proxy, to: scrollTarget) }
                 }
-                .ignoresSafeArea(edges: showControls ? [] : .all)
+                // Always full screen: the controls float above the pages without moving them.
+                .ignoresSafeArea()
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } }
             }
 
@@ -99,6 +101,7 @@ struct ReaderView: View {
                     .transition(.opacity)
             }
         }
+        .sheet(isPresented: $showChapterPicker) { chapterPicker }
         .statusBarHidden(!showControls)
         .preferredColorScheme(.dark)
         .task { await start(at: context.startChapterId, page: context.startPage, offset: context.startOffset) }
@@ -115,13 +118,6 @@ struct ReaderView: View {
             proxy.scrollTo(target, anchor: anchor)
             scrollTarget = nil
         }
-    }
-
-    private static var safeTop: CGFloat {
-        let window = UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-            .first
-        return window?.safeAreaInsets.top ?? 47
     }
 
     /// Anchor that puts the point `offset` (0…1) of a page at the top of the screen.
@@ -205,67 +201,173 @@ struct ReaderView: View {
 
     private var controls: some View {
         VStack {
-            HStack(spacing: 12) {
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                        .font(.headline)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(context.manga.title)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    if let chapter = currentChapter {
-                        Text(chapter.displayName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
-
+            topBar
             Spacer()
-
-            HStack(spacing: 16) {
-                Button {
-                    if let chapter = currentChapter, let previous = chapterBefore(chapter) {
-                        Task { await start(at: previous.id, page: 0, offset: 0) }
-                    }
-                } label: {
-                    Image(systemName: "chevron.left.2").frame(width: 44, height: 44)
-                }
-                .disabled(currentChapter.flatMap(chapterBefore) == nil)
-
-                Spacer()
-
-                if let current, let segment = segments.first(where: { $0.chapter.id == current.chapterId }) {
-                    Text("\(current.page + 1) / \(segment.pages.count)")
-                        .font(.footnote.monospacedDigit().weight(.medium))
-                }
-
-                Spacer()
-
-                Button {
-                    if let chapter = currentChapter, let next = chapterAfter(chapter) {
-                        Task { await start(at: next.id, page: 0, offset: 0) }
-                    }
-                } label: {
-                    Image(systemName: "chevron.right.2").frame(width: 44, height: 44)
-                }
-                .disabled(currentChapter.flatMap(chapterAfter) == nil)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(.ultraThinMaterial))
-            .padding(.horizontal, 40)
-            .padding(.bottom, 8)
+            bottomBar
         }
         .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            Button { dismiss() } label: {
+                Image(systemName: "arrow.left")
+                    .font(.headline)
+                    .frame(width: 40, height: 40)
+            }
+            MangaCover(url: context.manga.cover, cornerRadius: 6)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(context.manga.title)
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                if let chapter = currentChapter {
+                    Text(chapter.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 6)
+            if let current, let segment = segments.first(where: { $0.chapter.id == current.chapterId }) {
+                Text("\(current.page + 1) / \(segment.pages.count)")
+                    .font(.footnote.monospacedDigit().weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(Color.white.opacity(0.12)))
+            }
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(Color.black.opacity(0.88)))
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+    }
+
+    private var bottomBar: some View {
+        HStack(spacing: 10) {
+            roundButton(icon: downloadIcon) {
+                if let chapter = currentChapter, !downloads.isDownloaded(chapter.id) {
+                    downloads.enqueue([chapter], manga: context.manga)
+                }
+            }
+
+            HStack(spacing: 0) {
+                let previous = currentChapter.flatMap(chapterBefore)
+                Button {
+                    if let previous { Task { await start(at: previous.id, page: 0, offset: 0) } }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Préc.")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .disabled(previous == nil)
+                .opacity(previous == nil ? 0.35 : 1)
+
+                Button { showChapterPicker = true } label: {
+                    HStack(spacing: 4) {
+                        Text("Ch. \(currentChapter?.number ?? "?")")
+                            .fontWeight(.bold)
+                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+
+                let next = currentChapter.flatMap(chapterAfter)
+                Button {
+                    if let next { Task { await start(at: next.id, page: 0, offset: 0) } }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(next.map { "Ch. \($0.number)" } ?? "Fin")
+                        Image(systemName: "chevron.right")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .disabled(next == nil)
+                .opacity(next == nil ? 0.35 : 1)
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(height: 52)
+            .padding(.horizontal, 6)
+            .background(Capsule().fill(Color.black.opacity(0.88)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+
+            roundButton(icon: readIcon) {
+                if let chapter = currentChapter {
+                    let read = library.isRead(chapter.id, slug: context.manga.slug)
+                    library.setRead(!read, chapterIds: [chapter.id], slug: context.manga.slug)
+                }
+            }
+        }
+        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+        .padding(.bottom, 4)
+    }
+
+    private var downloadIcon: String {
+        guard let chapter = currentChapter else { return "arrow.down" }
+        if downloads.isDownloaded(chapter.id) { return "checkmark" }
+        if downloads.job(for: chapter.id) != nil { return "clock" }
+        return "arrow.down"
+    }
+
+    private var readIcon: String {
+        guard let chapter = currentChapter else { return "eye" }
+        return library.isRead(chapter.id, slug: context.manga.slug) ? "eye.fill" : "eye"
+    }
+
+    private func roundButton(icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.headline)
+                .frame(width: 52, height: 52)
+                .background(Circle().fill(Color.black.opacity(0.88)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.08)))
+        }
+    }
+
+    private var chapterPicker: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                List(context.chapters) { chapter in
+                    Button {
+                        showChapterPicker = false
+                        Task { await start(at: chapter.id, page: 0, offset: 0) }
+                    } label: {
+                        HStack {
+                            Text(chapter.displayName)
+                                .foregroundStyle(library.isRead(chapter.id, slug: context.manga.slug) ? Color.white.opacity(0.4) : .white)
+                                .fontWeight(chapter.id == currentChapter?.id ? .bold : .regular)
+                                .lineLimit(1)
+                            Spacer()
+                            if chapter.id == currentChapter?.id {
+                                Image(systemName: "book.fill").foregroundStyle(Theme.pink)
+                            } else if downloads.isDownloaded(chapter.id) {
+                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .id(chapter.id)
+                    .disabled(chapter.isPremium && !downloads.isDownloaded(chapter.id))
+                }
+                .listStyle(.plain)
+                .onAppear {
+                    if let id = currentChapter?.id { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
+            .navigationTitle("Chapitres")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fermer") { showChapterPicker = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .preferredColorScheme(.dark)
     }
 
     // MARK: - Navigation between chapters
@@ -325,7 +427,7 @@ struct ReaderView: View {
     /// and the part of it already above the top is the position inside that page.
     private func track(chapter: Chapter, index: Int, count: Int, minY: CGFloat, height: CGFloat) {
         guard height > 0, scrollTarget == nil else { return }
-        let topLine: CGFloat = showControls ? Self.safeTop + 1 : 1
+        let topLine: CGFloat = 1
         guard minY <= topLine, minY + height > topLine else { return }
         let offset = Double(min(max((topLine - minY) / height, 0), 1))
         let bucket = Int(offset * 25)
