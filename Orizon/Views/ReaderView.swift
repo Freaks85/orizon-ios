@@ -19,7 +19,8 @@ struct ReaderView: View {
     @State private var showDetails = false
     @State private var current: (chapterId: String, page: Int)?
     @State private var scrollTarget: String?
-    @State private var scrollAnchor: UnitPoint = .top
+    /// Position inside the target page to restore once the list is at that page's top.
+    @State private var restoreOffset: CGFloat = 0
     @State private var tracker = ScrollTracker()
     @State private var items: [Item] = []
 
@@ -32,6 +33,8 @@ struct ReaderView: View {
         var count = 0
         var offset: Double = 0
         var dirty = false
+        /// The UIScrollView behind the SwiftUI List, used for pixel-exact restoring.
+        weak var scrollView: UIScrollView?
     }
 
     struct Segment: Identifiable {
@@ -133,30 +136,37 @@ struct ReaderView: View {
         .onDisappear { commitProgress() }
     }
 
+    /// List.scrollTo only aligns an item's top (arbitrary anchors are ignored), so restoring
+    /// "63 % into page 5" is done in two steps: scroll to the page's top, then move the
+    /// underlying scroll view down by the remaining distance.
     private func scroll(_ proxy: ScrollViewProxy, to target: String?) {
         guard let target else { return }
-        let anchor = scrollAnchor
-        // Scroll twice: the list only knows the real row heights once they are laid out.
+        let extra = restoreOffset
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            proxy.scrollTo(target, anchor: anchor)
+            proxy.scrollTo(target, anchor: .top)
         }
+        // Again once real row heights are known, then apply the offset inside the page.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            proxy.scrollTo(target, anchor: anchor)
-            scrollTarget = nil
+            proxy.scrollTo(target, anchor: .top)
+            DispatchQueue.main.async {
+                if extra > 0, let scrollView = tracker.scrollView {
+                    let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
+                    var offset = scrollView.contentOffset
+                    // scrollTo(.top) leaves the page under the top inset; the saved position is
+                    // measured from the very top of the screen.
+                    offset.y = min(offset.y + extra + scrollView.adjustedContentInset.top, maxY)
+                    scrollView.setContentOffset(offset, animated: false)
+                }
+                restoreOffset = 0
+                scrollTarget = nil
+            }
         }
     }
 
-    /// Anchor that puts the point `offset` (0…1) of a page at the top of the screen.
-    /// scrollTo aligns the item's anchor point with the same point of the viewport,
-    /// so for an item of height h in a viewport of height H: a = offset·h / (h − H).
-    private func anchor(for page: Page, offset: Double) -> UnitPoint {
-        let screen = UIScreen.main.bounds
-        guard offset > 0, let ratio = page.aspectRatio else { return .top }
-        let h = screen.width / ratio
-        let H = screen.height
-        guard h > H else { return .top }
-        let a = offset * h / (h - H)
-        return UnitPoint(x: 0.5, y: min(max(a, 0), 1))
+    /// Height of a page as displayed (full screen width).
+    private func displayedHeight(of page: Page) -> CGFloat? {
+        guard let ratio = page.aspectRatio, ratio > 0 else { return nil }
+        return UIScreen.main.bounds.width / ratio
     }
 
     // MARK: - Rows
@@ -166,6 +176,9 @@ struct ReaderView: View {
         switch item {
         case .page(let chapter, let index, let count, let page):
             ReaderPage(page: page)
+                .background(ScrollViewLocator { scrollView in
+                    if tracker.scrollView == nil { tracker.scrollView = scrollView }
+                })
                 .background(
                     GeometryReader { geo in
                         Color.clear.onChange(of: geo.frame(in: .global).minY) { minY in
@@ -456,7 +469,7 @@ struct ReaderView: View {
             rebuildItems()
             current = (chapter.id, index)
             prefetch(pages, from: index)
-            scrollAnchor = anchor(for: pages[index], offset: offset)
+            restoreOffset = displayedHeight(of: pages[index]).map { CGFloat(offset) * $0 } ?? 0
             scrollTarget = "\(chapter.id)#\(index)"
         } catch {
             self.error = error.localizedDescription
@@ -669,5 +682,30 @@ struct ChapterCard: View {
         )
         .opacity(isRead && !isCurrent ? 0.45 : 1)
         .foregroundStyle(.white)
+    }
+}
+
+/// Finds the UIScrollView that hosts a SwiftUI view (here: the List of the reader).
+struct ScrollViewLocator: UIViewRepresentable {
+    let onFound: (UIScrollView) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            var current: UIView? = uiView.superview
+            while let view = current {
+                if let scrollView = view as? UIScrollView {
+                    onFound(scrollView)
+                    return
+                }
+                current = view.superview
+            }
+        }
     }
 }
