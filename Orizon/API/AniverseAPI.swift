@@ -83,8 +83,13 @@ final class AniverseAPI {
 
     /// Catalogue search; also used for "popular" and "newest" home rows.
     func search(query: String = "", sort: SortOrder = .popularity, genres: [String] = [], statuses: [String] = [], page: Int) async throws -> PagedResult<MangaSummary> {
+        let (items, hasNextPage) = try await searchItems(media: "manga", query: query, sort: sort, genres: genres, statuses: statuses, page: page)
+        return PagedResult(items: items.compactMap(summary), hasNextPage: hasNextPage)
+    }
+
+    private func searchItems(media: String, query: String, sort: SortOrder, genres: [String] = [], statuses: [String] = [], page: Int) async throws -> ([[String: Any]], Bool) {
         var items = [
-            URLQueryItem(name: "media", value: "manga"),
+            URLQueryItem(name: "media", value: media),
             URLQueryItem(name: "sort", value: sort.rawValue),
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "pageSize", value: "40")
@@ -95,10 +100,9 @@ final class AniverseAPI {
         for status in statuses { items.append(URLQueryItem(name: "status", value: status)) }
 
         let json = try await getJSON("api/anime/search", query: items)
-        let results = (json["data"] as? [[String: Any]] ?? []).compactMap(summary)
         let total = json["total"] as? Int ?? 0
         let pageSize = json["pageSize"] as? Int ?? 40
-        return PagedResult(items: results, hasNextPage: page * pageSize < total)
+        return (json["data"] as? [[String: Any]] ?? [], page * pageSize < total)
     }
 
     private func summary(_ item: [String: Any]) -> MangaSummary? {
@@ -238,5 +242,70 @@ final class AniverseAPI {
         for (entity, char) in entities { text = text.replacingOccurrences(of: entity, with: char) }
         text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// MARK: - Anime
+
+extension AniverseAPI {
+    func animeSearch(query: String = "", sort: SortOrder = .popularity, page: Int) async throws -> PagedResult<Anime> {
+        let (items, hasNextPage) = try await searchItems(media: "anime", query: query, sort: sort, page: page)
+        return PagedResult(items: items.compactMap(anime), hasNextPage: hasNextPage)
+    }
+
+    private func anime(_ item: [String: Any]) -> Anime? {
+        guard let id = item["id"] as? String, let slug = item["slug"] as? String else { return nil }
+        let synopsis = (item["description"] as? String).map(Self.plainText)
+        return Anime(
+            id: id,
+            slug: slug,
+            title: item["title"] as? String ?? item["titleEnglish"] as? String ?? slug,
+            cover: (item["image"] as? String).flatMap(URL.init(string:)),
+            banner: (item["coverImage"] as? String).flatMap(URL.init(string:)),
+            synopsis: synopsis?.isEmpty == true ? nil : synopsis,
+            status: (item["status"] as? String).map { MangaStatus.label($0) },
+            format: item["type"] as? String,
+            subCount: item["episodeSub"] as? Int ?? 0,
+            dubCount: item["episodeDub"] as? Int ?? 0
+        )
+    }
+
+    func episodes(animeId: String) async throws -> [Episode] {
+        let data = try await get("api/anime/episode/episodes", query: [
+            URLQueryItem(name: "animeId", value: animeId),
+            URLQueryItem(name: "limit", value: "-1")
+        ])
+        guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw APIError.parsing("la liste des épisodes")
+        }
+        var byNumber: [Int: Episode] = [:]
+        for item in list {
+            guard let number = item["episodeNumber"] as? Int, byNumber[number] == nil else { continue }
+            byNumber[number] = Episode(number: number, title: item["titleFr"] as? String ?? item["episodeTitle"] as? String)
+        }
+        return byNumber.values.sorted { $0.number < $1.number }
+    }
+
+    /// Number of episodes available in each version (fresher than the search counts).
+    func episodeCounts(animeId: String) async throws -> (sub: Int, dub: Int) {
+        let json = try await getJSON("api/anime/\(animeId)/episode-numbers")
+        return (json["sub"] as? Int ?? 0, json["dub"] as? Int ?? 0)
+    }
+
+    /// The HLS source is AES-128 encrypted with a key served next to it: AVPlayer handles it natively.
+    func stream(animeId: String, episode: Int, language: AnimeLanguage) async throws -> AnimeStream {
+        let json = try await getJSON("api/anime/stream/\(animeId)/\(episode)/\(language.rawValue)")
+        guard let source = (json["source"] as? String).flatMap(URL.init(string:)) else {
+            throw APIError.parsing("la vidéo de l'épisode")
+        }
+        let tracks = json["tracks"] as? [[String: Any]] ?? []
+        let track = tracks.first { $0["default"] as? Bool == true } ?? tracks.first
+        let subtitles = (track?["file"] as? String).flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL }
+        return AnimeStream(source: source, subtitles: subtitles)
+    }
+
+    func subtitles(_ url: URL) async throws -> [SubtitleCue] {
+        let (data, _) = try await session.data(from: url)
+        return SubtitleCue.parse(String(decoding: data, as: UTF8.self))
     }
 }

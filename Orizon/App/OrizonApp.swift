@@ -53,10 +53,18 @@ struct RootView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var downloads: DownloadManager
     @State private var tab: AppTab = .home
+    @State private var homeMode: HomeMode = .manga
 
     var body: some View {
         TabView(selection: $tab) {
-            HomeView().tag(AppTab.home).toolbar(.hidden, for: .tabBar)
+            Group {
+                if homeMode == .manga {
+                    HomeView(mode: $homeMode)
+                } else {
+                    AnimeHomeView(mode: $homeMode)
+                }
+            }
+            .tag(AppTab.home).toolbar(.hidden, for: .tabBar)
             SearchView().tag(AppTab.search).toolbar(.hidden, for: .tabBar)
             LibraryView().tag(AppTab.library).toolbar(.hidden, for: .tabBar)
             DownloadsView().tag(AppTab.downloads).toolbar(.hidden, for: .tabBar)

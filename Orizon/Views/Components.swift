@@ -294,21 +294,21 @@ struct MangaRow: View {
 
 /// Paged loader shared by the grids (home "see all" screens and search).
 @MainActor
-final class PagedLoader: ObservableObject {
-    @Published private(set) var items: [MangaSummary] = []
+final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
+    @Published private(set) var items: [Item] = []
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
     @Published private(set) var hasMore = true
 
     private var page = 1
-    private var fetch: (Int) async throws -> PagedResult<MangaSummary>
+    private var fetch: (Int) async throws -> PagedResult<Item>
     private var generation = 0
 
-    init(fetch: @escaping (Int) async throws -> PagedResult<MangaSummary>) {
+    init(fetch: @escaping (Int) async throws -> PagedResult<Item>) {
         self.fetch = fetch
     }
 
-    func reset(fetch: @escaping (Int) async throws -> PagedResult<MangaSummary>) {
+    func reset(fetch: @escaping (Int) async throws -> PagedResult<Item>) {
         self.fetch = fetch
         generation += 1
         items = []
@@ -318,7 +318,7 @@ final class PagedLoader: ObservableObject {
         isLoading = false
     }
 
-    func loadMoreIfNeeded(current: MangaSummary?) async {
+    func loadMoreIfNeeded(current: Item?) async {
         guard let current else { await loadMore(); return }
         let threshold = items.index(items.endIndex, offsetBy: -8, limitedBy: items.startIndex) ?? items.startIndex
         if let index = items.firstIndex(of: current), index >= threshold {
@@ -334,8 +334,8 @@ final class PagedLoader: ObservableObject {
         do {
             let result = try await fetch(page)
             guard currentGeneration == generation else { return }
-            let known = Set(items.map(\.slug))
-            items += result.items.filter { !known.contains($0.slug) }
+            let known = Set(items.map(\.id))
+            items += result.items.filter { !known.contains($0.id) }
             hasMore = result.hasNextPage && !result.items.isEmpty
             page += 1
         } catch {
@@ -347,7 +347,7 @@ final class PagedLoader: ObservableObject {
 }
 
 struct MangaGrid: View {
-    @ObservedObject var loader: PagedLoader
+    @ObservedObject var loader: PagedLoader<MangaSummary>
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)]
 
@@ -377,7 +377,7 @@ struct MangaGrid: View {
 
 struct PagedGridScreen: View {
     let title: String
-    @StateObject private var loader: PagedLoader
+    @StateObject private var loader: PagedLoader<MangaSummary>
 
     init(title: String, fetch: @escaping (Int) async throws -> PagedResult<MangaSummary>) {
         self.title = title

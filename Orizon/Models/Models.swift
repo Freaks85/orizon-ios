@@ -168,3 +168,81 @@ enum MangaStatus {
         }
     }
 }
+
+// MARK: - Anime
+
+struct Anime: Hashable, Identifiable {
+    let id: String
+    let slug: String
+    var title: String
+    var cover: URL?
+    var banner: URL?
+    var synopsis: String?
+    /// Already translated, e.g. "En cours".
+    var status: String?
+    /// "TV", "Movie", "OVA"…
+    var format: String?
+    var subCount: Int
+    var dubCount: Int
+
+    var versions: String {
+        [subCount > 0 ? "VOSTFR" : nil, dubCount > 0 ? "VF" : nil].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+struct Episode: Hashable, Identifiable {
+    let number: Int
+    var title: String?
+
+    var id: Int { number }
+}
+
+enum AnimeLanguage: String, CaseIterable, Identifiable {
+    case sub, dub
+
+    var id: String { rawValue }
+
+    var label: String { self == .sub ? "VOSTFR" : "VF" }
+}
+
+struct AnimeStream {
+    var source: URL
+    var subtitles: URL?
+}
+
+struct SubtitleCue {
+    let start: Double
+    let end: Double
+    let text: String
+
+    /// Minimal WebVTT reader: timings and text, styling tags dropped.
+    static func parse(_ vtt: String) -> [SubtitleCue] {
+        vtt.replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n\n")
+            .compactMap { block in
+                let lines = block.components(separatedBy: "\n").filter { !$0.isEmpty }
+                guard let index = lines.firstIndex(where: { $0.contains("-->") }) else { return nil }
+                let times = lines[index].components(separatedBy: "-->")
+                guard times.count == 2,
+                      let start = seconds(times[0]),
+                      let end = seconds(times[1].trimmingCharacters(in: .whitespaces).components(separatedBy: " ")[0])
+                else { return nil }
+                let text = lines[(index + 1)...].joined(separator: "\n")
+                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                return SubtitleCue(start: start, end: end, text: text)
+            }
+    }
+
+    /// "01:02:03.456" or "02:03.456".
+    private static func seconds(_ stamp: String) -> Double? {
+        let parts = stamp.trimmingCharacters(in: .whitespaces).components(separatedBy: ":")
+        guard (2...3).contains(parts.count) else { return nil }
+        var total = 0.0
+        for part in parts {
+            guard let value = Double(part) else { return nil }
+            total = total * 60 + value
+        }
+        return total
+    }
+}
+

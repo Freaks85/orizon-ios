@@ -27,9 +27,10 @@ final class HomeModel: ObservableObject {
 }
 
 struct HomeView: View {
+    @Binding var mode: HomeMode
     @EnvironmentObject private var library: LibraryStore
     @StateObject private var model = HomeModel()
-    @StateObject private var releases = PagedLoader { try await AniverseAPI.shared.latest(page: $0) }
+    @StateObject private var releases = PagedLoader<MangaSummary> { try await AniverseAPI.shared.latest(page: $0) }
     @State private var showSettings = false
     @State private var reader: ReaderContext?
     @State private var openingChapter: String?
@@ -91,6 +92,7 @@ struct HomeView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Logo() }
+                ToolbarItem(placement: .principal) { HomeModeSwitch(mode: $mode) }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: {
                         Image(systemName: "gearshape.fill")
@@ -193,7 +195,7 @@ struct HomeView: View {
 
 /// All recently updated mangas as release cards, with infinite scrolling.
 struct ReleasesScreen: View {
-    @StateObject private var loader = PagedLoader { try await AniverseAPI.shared.latest(page: $0) }
+    @StateObject private var loader = PagedLoader<MangaSummary> { try await AniverseAPI.shared.latest(page: $0) }
     @EnvironmentObject private var library: LibraryStore
     @State private var reader: ReaderContext?
     @State private var opening = false

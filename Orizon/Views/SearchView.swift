@@ -5,7 +5,7 @@ struct SearchView: View {
     @State private var sort: SortOrder = .popularity
     @State private var genres: Set<String> = []
     @State private var statuses: Set<StatusFilter> = []
-    @StateObject private var loader = PagedLoader { page in
+    @StateObject private var loader = PagedLoader<MangaSummary> { page in
         try await AniverseAPI.shared.search(sort: .popularity, page: page)
     }
 
