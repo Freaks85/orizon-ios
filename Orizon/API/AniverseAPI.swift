@@ -250,7 +250,27 @@ final class AniverseAPI {
 extension AniverseAPI {
     func animeSearch(query: String = "", sort: SortOrder = .popularity, page: Int) async throws -> PagedResult<Anime> {
         let (items, hasNextPage) = try await searchItems(media: "anime", query: query, sort: sort, page: page)
-        return PagedResult(items: items.compactMap(anime), hasNextPage: hasNextPage)
+        return PagedResult(items: await withSeries(items.compactMap(anime)), hasNextPage: hasNextPage)
+    }
+
+    /// Search results list each season separately: tag them with their series so lists show one card per show.
+    private func withSeries(_ animes: [Anime]) async -> [Anime] {
+        await withTaskGroup(of: (Int, String?).self) { group in
+            for (index, anime) in animes.enumerated() {
+                group.addTask { (index, (try? await self.seriesId(animeId: anime.id)) ?? nil) }
+            }
+            var result = animes
+            for await (index, seriesId) in group { result[index].seriesId = seriesId }
+            return result
+        }
+    }
+
+    private func seriesId(animeId: String) async throws -> String? {
+        let json = try await getJSON("api/anime", query: [
+            URLQueryItem(name: "id", value: animeId),
+            URLQueryItem(name: "select", value: "seasonId")
+        ])
+        return json["seasonId"] as? String
     }
 
     private func anime(_ item: [String: Any]) -> Anime? {

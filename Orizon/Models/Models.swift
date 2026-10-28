@@ -186,6 +186,10 @@ struct Anime: Codable, Hashable, Identifiable {
     var dubCount: Int
     /// MyAnimeList id, used for the opening/ending timings.
     var malId: Int? = nil
+    /// Shared by every season, OVA and film of the same show (nil for a standalone anime).
+    var seriesId: String? = nil
+
+    var isMovie: Bool { format?.lowercased() == "movie" }
 
     var versions: String {
         [subCount > 0 ? "VOSTFR" : nil, dubCount > 0 ? "VF" : nil].compactMap { $0 }.joined(separator: " · ")

@@ -303,8 +303,11 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
     private var page = 1
     private var fetch: (Int) async throws -> PagedResult<Item>
     private var generation = 0
+    /// Items sharing a key are shown once (the first one loaded wins).
+    private let key: (Item) -> AnyHashable
 
-    init(fetch: @escaping (Int) async throws -> PagedResult<Item>) {
+    init(key: @escaping (Item) -> AnyHashable = { AnyHashable($0.id) }, fetch: @escaping (Int) async throws -> PagedResult<Item>) {
+        self.key = key
         self.fetch = fetch
     }
 
@@ -334,8 +337,8 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
         do {
             let result = try await fetch(page)
             guard currentGeneration == generation else { return }
-            let known = Set(items.map(\.id))
-            items += result.items.filter { !known.contains($0.id) }
+            var known = Set(items.map(key))
+            items += result.items.filter { known.insert(key($0)).inserted }
             hasMore = result.hasNextPage && !result.items.isEmpty
             page += 1
         } catch {

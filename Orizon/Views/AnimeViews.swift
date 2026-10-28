@@ -39,8 +39,11 @@ struct HomeModeSwitch: View {
 
 struct AnimeHomeView: View {
     @Binding var mode: HomeMode
-    @StateObject private var popular = PagedLoader<Anime> { try await AniverseAPI.shared.animeSearch(sort: .popularity, page: $0) }
-    @StateObject private var newest = PagedLoader<Anime> { try await AniverseAPI.shared.animeSearch(sort: .newest, page: $0) }
+    @StateObject private var popular = PagedLoader<Anime>(key: Self.seriesKey) { try await AniverseAPI.shared.animeSearch(sort: .popularity, page: $0) }
+    @StateObject private var newest = PagedLoader<Anime>(key: Self.seriesKey) { try await AniverseAPI.shared.animeSearch(sort: .newest, page: $0) }
+
+    /// One card per show (every season of Attack on Titan shares one series id); films keep their own card.
+    private static func seriesKey(_ anime: Anime) -> AnyHashable { AnyHashable(anime.isMovie ? anime.id : anime.seriesId ?? anime.id) }
     @State private var showSettings = false
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)]
@@ -130,11 +133,22 @@ struct AnimeCard: View {
                         StatusBadge(status: status).padding(6)
                     }
                 }
+                .overlay(alignment: .topTrailing) {
+                    if anime.isMovie {
+                        Label("Film", systemImage: "film")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Theme.gradient))
+                            .foregroundStyle(.white)
+                            .padding(6)
+                    }
+                }
             Text(anime.title)
                 .font(.footnote.weight(.bold))
                 .lineLimit(2, reservesSpace: true)
                 .foregroundStyle(.primary)
-            Text(anime.versions)
+            Text(anime.seriesId == nil || anime.isMovie ? anime.versions : [anime.versions, "Saisons"].filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.caption2)
                 .foregroundStyle(Theme.pink)
                 .lineLimit(1)
