@@ -73,14 +73,16 @@ final class AniverseAPI {
     // MARK: - Lists
 
     /// Recently updated mangas (28 per page).
-    func latest(page: Int) async throws -> PagedResult<MangaSummary> {
-        let json = try await getJSON("api/manga", query: [URLQueryItem(name: "page", value: String(page))])
+    func latest(page: Int, genre: String? = nil) async throws -> PagedResult<MangaSummary> {
+        var query = [URLQueryItem(name: "page", value: String(page))]
+        if let genre { query.append(URLQueryItem(name: "genre", value: genre)) }
+        let json = try await getJSON("api/manga", query: query)
         let items = (json["items"] as? [[String: Any]] ?? []).compactMap(summary)
         return PagedResult(items: items, hasNextPage: json["hasNextPage"] as? Bool ?? false)
     }
 
     /// Catalogue search; also used for "popular" and "newest" home rows.
-    func search(query: String = "", sort: SortOrder = .popularity, genres: [String] = [], page: Int) async throws -> PagedResult<MangaSummary> {
+    func search(query: String = "", sort: SortOrder = .popularity, genres: [String] = [], statuses: [String] = [], page: Int) async throws -> PagedResult<MangaSummary> {
         var items = [
             URLQueryItem(name: "media", value: "manga"),
             URLQueryItem(name: "sort", value: sort.rawValue),
@@ -90,6 +92,7 @@ final class AniverseAPI {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { items.append(URLQueryItem(name: "q", value: trimmed)) }
         for genre in genres { items.append(URLQueryItem(name: "genres", value: genre)) }
+        for status in statuses { items.append(URLQueryItem(name: "status", value: status)) }
 
         let json = try await getJSON("api/anime/search", query: items)
         let results = (json["data"] as? [[String: Any]] ?? []).compactMap(summary)
@@ -101,11 +104,17 @@ final class AniverseAPI {
     private func summary(_ item: [String: Any]) -> MangaSummary? {
         guard let slug = item["slug"] as? String else { return nil }
         let title = item["title"] as? String ?? item["titleEnglish"] as? String ?? slug
-        var subtitle: String?
-        if let latest = (item["latestChapters"] as? [[String: Any]])?.first,
-           let number = latest["number"] as? String {
-            subtitle = "Chapitre \(number)"
+        let latestChapters = (item["latestChapters"] as? [[String: Any]] ?? []).compactMap { chapter -> Chapter? in
+            guard let id = chapter["id"] as? String, let number = chapter["number"] as? String else { return nil }
+            return Chapter(
+                id: id,
+                number: number,
+                title: nil,
+                date: (chapter["updatedAt"] as? String).flatMap(isoFormatter.date(from:)),
+                premiumUntil: (chapter["premiumUntil"] as? String).flatMap(isoFormatter.date(from:))
+            )
         }
+        let subtitle = latestChapters.first.map { "Chapitre \($0.number)" }
         let synopsis = (item["description"] as? String).map(Self.plainText)
         return MangaSummary(
             slug: slug,
@@ -115,7 +124,9 @@ final class AniverseAPI {
             banner: (item["coverImage"] as? String).flatMap(URL.init(string:)),
             synopsis: synopsis?.isEmpty == true ? nil : synopsis,
             status: (item["status"] as? String).map { MangaStatus.label($0) },
-            kind: MangaKind.label(type: item["type"] as? String, country: item["countryOfOrigin"] as? String)
+            kind: MangaKind.label(type: item["type"] as? String, country: item["countryOfOrigin"] as? String),
+            country: item["countryOfOrigin"] as? String,
+            latestChapters: latestChapters
         )
     }
 

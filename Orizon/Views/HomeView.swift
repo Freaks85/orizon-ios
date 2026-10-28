@@ -40,6 +40,11 @@ struct HomeView: View {
     @EnvironmentObject private var library: LibraryStore
     @StateObject private var model = HomeModel()
     @State private var showSettings = false
+    @State private var reader: ReaderContext?
+    @State private var openingChapter: String?
+    @State private var openError: String?
+
+    private let releaseColumns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
     var body: some View {
         NavigationStack {
@@ -58,8 +63,30 @@ struct HomeView: View {
                         }
                     }
 
-                    section("Sorties récentes", items: model.latest) {
-                        PagedGridScreen(title: "Sorties récentes") { try await AniverseAPI.shared.latest(page: $0) }
+                    genresRow
+
+                    if !model.latest.isEmpty {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SectionHeader(title: "Sorties récentes") {
+                                    NavigationLink {
+                                        ReleasesScreen()
+                                    } label: {
+                                        Text("Tout voir").font(.subheadline).foregroundStyle(Theme.pink)
+                                    }
+                                }
+                                Text("Triés par date de sortie du dernier chapitre.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal)
+                            }
+                            LazyVGrid(columns: releaseColumns, spacing: 22) {
+                                ForEach(model.latest.prefix(10)) { manga in
+                                    ReleaseCard(manga: manga) { open($0, of: manga) }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
                     }
                     section("Populaires", items: model.popular) {
                         PagedGridScreen(title: "Populaires") { try await AniverseAPI.shared.search(sort: .popularity, page: $0) }
@@ -95,9 +122,100 @@ struct HomeView: View {
             }
             .navigationDestination(for: MangaSummary.self) { MangaDetailView(manga: $0) }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .fullScreenCover(item: $reader) { ReaderView(context: $0) }
+            .overlay {
+                if openingChapter != nil {
+                    ProgressView("Ouverture du chapitre…")
+                        .padding(24)
+                        .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                }
+            }
+            .alert("Impossible d'ouvrir le chapitre", isPresented: Binding(get: { openError != nil }, set: { if !$0 { openError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(openError ?? "")
+            }
             .task { if model.latest.isEmpty { await model.load() } }
         }
     }
+
+    private var genresRow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Genres")
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    ForEach(GenreInfo.all) { genre in
+                        NavigationLink {
+                            PagedGridScreen(title: genre.name) { try await AniverseAPI.shared.latest(page: $0, genre: genre.id) }
+                        } label: {
+                            GenreCard(genre: genre)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    /// Opens a chapter straight from a release card: the reader needs the full chapter list.
+    private func open(_ chapter: Chapter, of manga: MangaSummary) {
+        guard openingChapter == nil else { return }
+        openingChapter = chapter.id
+        Task {
+            defer { openingChapter = nil }
+            do {
+                let chapters = try await AniverseAPI.shared.chapters(slug: manga.slug)
+                if library.contains(manga.slug) { library.merge(chapters: chapters, for: manga) }
+                reader = ReaderContext(manga: manga, chapters: chapters, startChapterId: chapter.id)
+            } catch {
+                openError = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// All recently updated mangas as release cards, with infinite scrolling.
+struct ReleasesScreen: View {
+    @StateObject private var loader = PagedLoader { try await AniverseAPI.shared.latest(page: $0) }
+    @EnvironmentObject private var library: LibraryStore
+    @State private var reader: ReaderContext?
+    @State private var opening = false
+
+    private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 22) {
+                ForEach(loader.items) { manga in
+                    ReleaseCard(manga: manga) { chapter in
+                        guard !opening else { return }
+                        opening = true
+                        Task {
+                            defer { opening = false }
+                            if let chapters = try? await AniverseAPI.shared.chapters(slug: manga.slug) {
+                                reader = ReaderContext(manga: manga, chapters: chapters, startChapterId: chapter.id)
+                            }
+                        }
+                    }
+                    .task { await loader.loadMoreIfNeeded(current: manga) }
+                }
+            }
+            .padding()
+            if loader.isLoading {
+                ProgressView().tint(Theme.pink).padding()
+            } else if let error = loader.error {
+                ErrorView(message: error) { Task { await loader.loadMore() } }
+            }
+        }
+        .background(Theme.background)
+        .navigationTitle("Sorties récentes")
+        .navigationBarTitleDisplayMode(.inline)
+        .overlay { if opening { ProgressView().tint(Theme.pink) } }
+        .fullScreenCover(item: $reader) { ReaderView(context: $0) }
+        .task { if loader.items.isEmpty { await loader.loadMore() } }
+    }
+}
 
     @ViewBuilder
     private func section<Destination: View>(_ title: String, items: [MangaSummary], @ViewBuilder destination: @escaping () -> Destination) -> some View {

@@ -13,8 +13,23 @@ struct MangaSummary: Codable, Hashable, Identifiable {
     var status: String? = nil
     /// "Manga", "Manhwa", "Manhua"…
     var kind: String? = nil
+    /// ISO country code of origin, e.g. "KR".
+    var country: String? = nil
+    /// The most recent chapters, newest first (only in "recently updated" lists).
+    var latestChapters: [Chapter] = []
 
     var id: String { slug }
+
+    var flag: String? {
+        guard let country, country.count == 2 else { return nil }
+        let base: UInt32 = 127397
+        var result = ""
+        for scalar in country.uppercased().unicodeScalars {
+            guard let flagScalar = UnicodeScalar(base + scalar.value) else { return nil }
+            result.unicodeScalars.append(flagScalar)
+        }
+        return result
+    }
 }
 
 struct MangaDetails: Codable, Hashable {
@@ -49,6 +64,12 @@ struct Chapter: Codable, Hashable, Identifiable {
     var isPremium: Bool {
         guard let premiumUntil else { return false }
         return premiumUntil > Date()
+    }
+
+    /// Released less than 48 hours ago.
+    var isNew: Bool {
+        guard let date else { return false }
+        return Date().timeIntervalSince(date) < 48 * 3600
     }
 
     var displayName: String {
@@ -88,6 +109,14 @@ enum SortOrder: String, CaseIterable, Identifiable {
         case .title: return "Titre"
         }
     }
+}
+
+enum StatusFilter: String, CaseIterable, Identifiable {
+    case ongoing = "Ongoing", finished = "Finished", upcoming = "Upcoming", hiatus = "On hiatus", cancelled = "Cancelled"
+
+    var id: String { rawValue }
+
+    var label: String { MangaStatus.label(rawValue) }
 }
 
 enum MangaKind {

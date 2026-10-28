@@ -24,13 +24,28 @@ struct MangaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             MangaCover(url: manga.cover)
+                .overlay(alignment: .topLeading) {
+                    if let status = manga.status {
+                        StatusBadge(status: status).padding(6)
+                    }
+                }
                 .overlay(alignment: .topTrailing) {
                     if badge > 0 {
                         Badge(count: badge).padding(6)
                     }
                 }
+            if manga.status != nil || manga.kind != nil {
+                HStack {
+                    Text(manga.status ?? "")
+                    Spacer(minLength: 4)
+                    Text(manga.kind ?? "")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
             Text(manga.title)
-                .font(.footnote.weight(.semibold))
+                .font(.footnote.weight(.bold))
                 .lineLimit(2, reservesSpace: true)
                 .foregroundStyle(.primary)
             if let text = caption ?? manga.subtitle {
@@ -40,6 +55,149 @@ struct MangaCard: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+struct StatusBadge: View {
+    let status: String
+
+    var body: some View {
+        Text(status)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(status == "En cours" ? Color.green : .white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(.black.opacity(0.7)))
+    }
+}
+
+struct FlagBadge: View {
+    let flag: String
+
+    var body: some View {
+        Text(flag)
+            .font(.system(size: 15))
+            .frame(width: 28, height: 28)
+            .background(Circle().fill(.white))
+    }
+}
+
+/// Recently updated manga, Aniverse style: big cover, flag, bookmark and the two latest chapters.
+struct ReleaseCard: View {
+    let manga: MangaSummary
+    var openChapter: (Chapter) -> Void
+
+    @EnvironmentObject private var library: LibraryStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            NavigationLink(value: manga) {
+                MangaCover(url: manga.cover, cornerRadius: 16)
+                    .overlay(alignment: .topLeading) {
+                        if let flag = manga.flag {
+                            FlagBadge(flag: flag).padding(8)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    library.toggle(manga, chapters: [])
+                } label: {
+                    Image(systemName: library.contains(manga.slug) ? "bookmark.fill" : "bookmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(library.contains(manga.slug) ? Theme.pink : .white)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(.black.opacity(0.6)))
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+            }
+
+            NavigationLink(value: manga) {
+                Text(manga.title)
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+
+            ForEach(manga.latestChapters.prefix(2)) { chapter in
+                Button { openChapter(chapter) } label: {
+                    HStack {
+                        Text("Ch. \(chapter.number)")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(chapter.isNew ? Color.primary : .secondary)
+                        Spacer(minLength: 4)
+                        if chapter.isPremium {
+                            Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.yellow)
+                        } else if chapter.isNew {
+                            Text("NOUVEAU")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Theme.pink)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Theme.pink.opacity(0.15)))
+                        } else if let date = chapter.date {
+                            Text(date.relative)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+struct GenreInfo: Identifiable {
+    let id: String      // value used by the API
+    let name: String
+    let icon: String
+    let blurb: String
+
+    static let all: [GenreInfo] = [
+        GenreInfo(id: "Action", name: "Action", icon: "bolt.fill", blurb: "Combats nerveux, cascades et adrénaline."),
+        GenreInfo(id: "Adventure", name: "Aventure", icon: "mountain.2.fill", blurb: "Quêtes, voyages et découvertes."),
+        GenreInfo(id: "Fantasy", name: "Fantasy", icon: "wand.and.stars", blurb: "Magie, donjons et mondes imaginaires."),
+        GenreInfo(id: "Comedy", name: "Comédie", icon: "face.smiling.fill", blurb: "De quoi rire un bon coup."),
+        GenreInfo(id: "Drama", name: "Drame", icon: "theatermasks.fill", blurb: "Émotions fortes et destins brisés."),
+        GenreInfo(id: "Romance", name: "Romance", icon: "heart.fill", blurb: "Histoires d'amour et cœurs qui battent."),
+        GenreInfo(id: "Supernatural", name: "Surnaturel", icon: "sparkles", blurb: "Esprits, pouvoirs et phénomènes étranges."),
+        GenreInfo(id: "Horror", name: "Horreur", icon: "eye.trianglebadge.exclamationmark.fill", blurb: "Frissons et cauchemars garantis."),
+        GenreInfo(id: "Mystery", name: "Mystère", icon: "magnifyingglass", blurb: "Énigmes, enquêtes et secrets."),
+        GenreInfo(id: "Psychological", name: "Psychologique", icon: "brain.head.profile", blurb: "Manipulations et esprits torturés."),
+        GenreInfo(id: "Sci-Fi", name: "Science-fiction", icon: "airplane", blurb: "Futur, technologie et espace."),
+        GenreInfo(id: "Slice of Life", name: "Tranche de vie", icon: "cup.and.saucer.fill", blurb: "Le quotidien, simplement."),
+        GenreInfo(id: "Sports", name: "Sport", icon: "figure.run", blurb: "Compétition, dépassement de soi."),
+        GenreInfo(id: "Thriller", name: "Thriller", icon: "exclamationmark.triangle.fill", blurb: "Suspense et tension permanente.")
+    ]
+}
+
+struct GenreCard: View {
+    let genre: GenreInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: genre.icon)
+                .font(.title2)
+                .foregroundStyle(Theme.gradient)
+            Text(genre.name)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+            Text(genre.blurb)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(16)
+        .frame(width: 170, height: 150, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color.white.opacity(0.08)))
     }
 }
 
@@ -120,7 +278,7 @@ final class PagedLoader: ObservableObject {
 struct MangaGrid: View {
     @ObservedObject var loader: PagedLoader
 
-    private let columns = [GridItem(.adaptive(minimum: 105, maximum: 160), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 16) {
