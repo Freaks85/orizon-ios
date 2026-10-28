@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DownloadsView: View {
+    var mode: HomeMode = .manga
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var episodes: EpisodeDownloads
@@ -12,7 +13,7 @@ struct DownloadsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if !downloads.jobs.isEmpty {
+                if mode == .manga && !downloads.jobs.isEmpty {
                     Section {
                         ForEach(downloads.jobs) { job in
                             JobRow(job: job)
@@ -37,7 +38,7 @@ struct DownloadsView: View {
                     .listRowBackground(Theme.surface)
                 }
 
-                if !episodes.jobs.isEmpty {
+                if mode == .anime && !episodes.jobs.isEmpty {
                     Section {
                         ForEach(episodes.jobs) { job in
                             EpisodeJobRow(job: job)
@@ -62,7 +63,7 @@ struct DownloadsView: View {
                     .listRowBackground(Theme.surface)
                 }
 
-                ForEach(episodes.byAnime) { group in
+                ForEach(mode == .anime ? episodes.byAnime : []) { group in
                     Section {
                         ForEach(group.episodes) { item in
                             HStack {
@@ -81,7 +82,7 @@ struct DownloadsView: View {
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 let sameVersion = group.episodes.filter { $0.language == item.language }.map(\.episode)
-                                player = PlayerContext(anime: group.anime, episodes: sameVersion, language: item.language, startEpisode: item.episode.number)
+                                player = PlayerContext(anime: group.anime, series: group.anime, episodes: sameVersion, language: item.language, startEpisode: item.episode.number)
                             }
                             .swipeActions {
                                 Button(role: .destructive) { episodes.delete(item.id) } label: {
@@ -106,7 +107,7 @@ struct DownloadsView: View {
                     .listRowBackground(Theme.surface)
                 }
 
-                ForEach(downloads.downloadedByManga) { group in
+                ForEach(mode == .manga ? downloads.downloadedByManga : []) { group in
                     Section {
                         ForEach(group.chapters) { item in
                             HStack {
@@ -148,12 +149,14 @@ struct DownloadsView: View {
                     .listRowBackground(Theme.surface)
                 }
 
-                if downloads.jobs.isEmpty && downloads.downloaded.isEmpty && episodes.jobs.isEmpty && episodes.downloaded.isEmpty {
+                if isEmpty {
                     VStack(spacing: 14) {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: 44))
                             .foregroundStyle(Theme.gradient)
-                        Text("Aucun téléchargement.\nGlisse un chapitre vers la gauche, utilise le menu « … » d'un manga ou la flèche d'un épisode.")
+                        Text(mode == .manga
+                             ? "Aucun chapitre téléchargé.\nGlisse un chapitre vers la gauche ou utilise le menu « … » d'un manga."
+                             : "Aucun épisode téléchargé.\nTouche la flèche d'un épisode ou celle en haut de la fiche d'un animé.")
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                     }
@@ -169,17 +172,19 @@ struct DownloadsView: View {
             .background(Theme.background)
             .navigationTitle("Téléchargements")
             .toolbar {
-                if !downloads.downloaded.isEmpty || !episodes.downloaded.isEmpty {
+                if totalBytes > 0 {
                     ToolbarItem(placement: .topBarLeading) {
-                        Text((downloads.totalBytes + episodes.totalBytes).fileSize).font(.caption).foregroundStyle(.secondary)
+                        Text(totalBytes.fileSize).font(.caption).foregroundStyle(.secondary)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            if mode == .manga {
                             Button {
                                 let count = downloads.deleteRead { library.isRead($0.chapter.id, slug: $0.manga.slug) }
                                 deletedMessage = count == 0 ? "Aucun chapitre lu à supprimer." : "\(count) chapitre(s) lu(s) supprimé(s)."
                             } label: {
                                 Label("Supprimer les chapitres lus", systemImage: "eye.slash")
+                            }
                             }
                             Button(role: .destructive) { confirmDeleteAll = true } label: {
                                 Label("Tout supprimer", systemImage: "trash")
@@ -191,9 +196,8 @@ struct DownloadsView: View {
                 }
             }
             .confirmationDialog("Supprimer tous les téléchargements ?", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
-                Button("Tout supprimer (\((downloads.totalBytes + episodes.totalBytes).fileSize))", role: .destructive) {
-                    downloads.deleteEverything()
-                    episodes.deleteEverything()
+                Button("Tout supprimer (\(totalBytes.fileSize))", role: .destructive) {
+                    if mode == .manga { downloads.deleteEverything() } else { episodes.deleteEverything() }
                 }
             }
             .alert(deletedMessage ?? "", isPresented: Binding(get: { deletedMessage != nil }, set: { if !$0 { deletedMessage = nil } })) {
@@ -202,6 +206,12 @@ struct DownloadsView: View {
             .fullScreenCover(item: $reader) { ReaderView(context: $0) }
         }
     }
+
+    private var isEmpty: Bool {
+        mode == .manga ? downloads.jobs.isEmpty && downloads.downloaded.isEmpty : episodes.jobs.isEmpty && episodes.downloaded.isEmpty
+    }
+
+    private var totalBytes: Int64 { mode == .manga ? downloads.totalBytes : episodes.totalBytes }
 }
 
 struct JobRow: View {

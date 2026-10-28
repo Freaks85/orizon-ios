@@ -253,6 +253,15 @@ extension AniverseAPI {
         return PagedResult(items: await withSeries(items.compactMap(anime)), hasNextPage: hasNextPage)
     }
 
+    /// Aniverse's home lists: "recently-updated" (newest episodes) and "upcoming", 14 per page.
+    func animeCategory(_ category: String, page: Int) async throws -> PagedResult<Anime> {
+        let json = try await getJSON("api/anime/category/\(category)", query: [URLQueryItem(name: "page", value: String(page))])
+        let items = (json["data"] as? [[String: Any]] ?? []).compactMap(anime)
+        let total = json["total"] as? Int ?? 0
+        let pageSize = json["pageSize"] as? Int ?? 14
+        return PagedResult(items: items, hasNextPage: page * pageSize < total)
+    }
+
     /// Search results list each season separately: tag them with their series so lists show one card per show.
     private func withSeries(_ animes: [Anime]) async -> [Anime] {
         await withTaskGroup(of: (Int, String?).self) { group in
@@ -287,7 +296,8 @@ extension AniverseAPI {
             format: item["type"] as? String,
             subCount: item["episodeSub"] as? Int ?? 0,
             dubCount: item["episodeDub"] as? Int ?? 0,
-            malId: item["malId"] as? Int
+            malId: item["malId"] as? Int,
+            latestEpisodes: (item["latestSubEpisodes"] as? [[String: Any]] ?? []).compactMap { $0["number"] as? Int }
         )
     }
 

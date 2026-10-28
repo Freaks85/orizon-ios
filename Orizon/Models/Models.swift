@@ -188,8 +188,14 @@ struct Anime: Codable, Hashable, Identifiable {
     var malId: Int? = nil
     /// Shared by every season, OVA and film of the same show (nil for a standalone anime).
     var seriesId: String? = nil
+    /// Newest episode numbers, newest first (only in "recently updated" lists).
+    var latestEpisodes: [Int] = []
 
     var isMovie: Bool { format?.lowercased() == "movie" }
+    /// Identifies the show in the library and history (shared by all its seasons).
+    var seriesKey: String { seriesId ?? id }
+    /// One card per show in lists; films keep their own card.
+    var listKey: AnyHashable { AnyHashable(isMovie ? id : seriesKey) }
 
     var versions: String {
         [subCount > 0 ? "VOSTFR" : nil, dubCount > 0 ? "VF" : nil].compactMap { $0 }.joined(separator: " · ")

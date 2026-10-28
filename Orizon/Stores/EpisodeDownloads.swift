@@ -135,6 +135,14 @@ final class EpisodeDownloads: ObservableObject {
         for item in downloaded.values where item.anime.id == animeId { delete(item.id) }
     }
 
+    /// Deletes the downloaded episodes for which `isWatched` returns true. Returns how many.
+    @discardableResult
+    func deleteWatched(where isWatched: (DownloadedEpisode) -> Bool) -> Int {
+        let watched = downloaded.values.filter(isWatched)
+        for item in watched { delete(item.id) }
+        return watched.count
+    }
+
     func deleteEverything() {
         cancelAll()
         downloaded.removeAll()

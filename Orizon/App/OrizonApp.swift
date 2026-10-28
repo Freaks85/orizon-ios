@@ -23,6 +23,7 @@ struct OrizonApp: App {
                 .environmentObject(library)
                 .environmentObject(downloads)
                 .environmentObject(EpisodeDownloads.shared)
+                .environmentObject(AnimeStore.shared)
                 .preferredColorScheme(.dark)
                 .tint(Theme.pink)
         }
@@ -32,6 +33,7 @@ struct OrizonApp: App {
                 Task { await library.checkForUpdates() }
             case .background:
                 library.flush()
+                AnimeStore.shared.flush()
             default:
                 break
             }
@@ -78,14 +80,20 @@ struct RootView: View {
                 }
             }
             .tag(AppTab.home).toolbar(.hidden, for: .tabBar)
-            SearchView().tag(AppTab.search).toolbar(.hidden, for: .tabBar)
-            LibraryView().tag(AppTab.library).toolbar(.hidden, for: .tabBar)
-            DownloadsView().tag(AppTab.downloads).toolbar(.hidden, for: .tabBar)
+            Group {
+                if homeMode == .manga { SearchView() } else { AnimeSearchView() }
+            }
+            .tag(AppTab.search).toolbar(.hidden, for: .tabBar)
+            Group {
+                if homeMode == .manga { LibraryView() } else { AnimeLibraryView() }
+            }
+            .tag(AppTab.library).toolbar(.hidden, for: .tabBar)
+            DownloadsView(mode: homeMode).tag(AppTab.downloads).toolbar(.hidden, for: .tabBar)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             FloatingTabBar(selection: $tab, badges: [
-                .library: library.newChapterCount,
-                .downloads: downloads.jobs.count + episodeDownloads.jobs.count
+                .library: homeMode == .manga ? library.newChapterCount : 0,
+                .downloads: homeMode == .manga ? downloads.jobs.count : episodeDownloads.jobs.count
             ])
         }
         .background(Theme.background)

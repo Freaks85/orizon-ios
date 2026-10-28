@@ -2,7 +2,10 @@ import AVKit
 import SwiftUI
 
 struct PlayerContext: Identifiable {
+    /// The season being played.
     var anime: Anime
+    /// The show it belongs to, as opened from the lists (key of the watch history).
+    var series: Anime
     /// Episodes available in `language`, oldest first.
     var episodes: [Episode]
     var language: AnimeLanguage
@@ -14,6 +17,7 @@ struct PlayerContext: Identifiable {
 final class PlayerModel: ObservableObject {
     let player = AVPlayer()
     let anime: Anime
+    let series: Anime
     let episodes: [Episode]
     let language: AnimeLanguage
 
@@ -34,9 +38,12 @@ final class PlayerModel: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    private var lastSaved = Date.distantPast
+    private var autoSkipped: SkipSegment?
 
     init(context: PlayerContext) {
         anime = context.anime
+        series = context.series
         episodes = context.episodes
         language = context.language
         episode = context.startEpisode
@@ -55,16 +62,22 @@ final class PlayerModel: ObservableObject {
             let item = note.object as? AVPlayerItem
             MainActor.assumeIsolated {
                 guard let self, item === self.player.currentItem else { return }
-                self.playNext()
+                self.currentTime = self.duration
+                self.saveProgress()
+                if UserDefaults.standard.object(forKey: SettingsKeys.animeAutoNext) as? Bool ?? true {
+                    self.playNext()
+                }
             }
         }
         play(episode)
     }
 
     func stop() {
+        saveProgress()
         loadTask?.cancel()
         player.pause()
         player.replaceCurrentItem(with: nil)
+        deleteIfWatched(episode)
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
@@ -72,7 +85,9 @@ final class PlayerModel: ObservableObject {
     }
 
     func play(_ number: Int) {
+        if number != episode { saveProgress() }
         loadTask?.cancel()
+        let previous = episode
         episode = number
         error = nil
         isLoading = true
@@ -82,7 +97,9 @@ final class PlayerModel: ObservableObject {
         segments = []
         currentTime = 0
         duration = 0
+        autoSkipped = nil
         player.replaceCurrentItem(with: nil)
+        if previous != number { deleteIfWatched(previous) }
         let anime = anime, language = language
         loadTask = Task {
             let api = AniverseAPI.shared
@@ -99,7 +116,21 @@ final class PlayerModel: ObservableObject {
                     subtitles = language == .sub ? stream.subtitles : nil
                 }
                 guard !Task.isCancelled else { return }
-                player.replaceCurrentItem(with: AVPlayerItem(url: source))
+                let item = AVPlayerItem(url: source)
+                player.replaceCurrentItem(with: item)
+                if let resume = AnimeStore.shared.resumePosition(animeId: anime.id, language: language, episode: number), resume > 5 {
+                    // Seeking only works once the item is ready.
+                    var waited = 0
+                    while item.status == .unknown && waited < 100 {
+                        try await Task.sleep(nanoseconds: 100_000_000)
+                        waited += 1
+                    }
+                    if item.status == .readyToPlay {
+                        _ = await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+                        currentTime = resume
+                    }
+                }
+                guard !Task.isCancelled else { return }
                 player.play()
                 isLoading = false
 
@@ -145,13 +176,32 @@ final class PlayerModel: ObservableObject {
         if segment.isEnding, nextEpisode != nil { playNext() } else { seek(to: segment.end) }
     }
 
+    /// "Supprimer un épisode téléchargé une fois vu", applied once the player has let go of its files.
+    private func deleteIfWatched(_ number: Int) {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.autoDeleteWatched),
+              AnimeStore.shared.isWatched(animeId: anime.id, episode: number) else { return }
+        EpisodeDownloads.shared.delete(EpisodeDownloads.key(anime.id, language, number))
+    }
+
+    private func saveProgress() {
+        guard duration > 0, currentTime > 3 else { return }
+        AnimeStore.shared.save(series: series, season: anime, episode: episode, language: language,
+                               position: currentTime, duration: duration)
+        lastSaved = Date()
+    }
+
     private func tick(_ time: Double) {
         isPlaying = player.rate != 0
+        if isPlaying, Date().timeIntervalSince(lastSaved) > 5 { saveProgress() }
         if let total = player.currentItem?.duration.seconds, total.isFinite { duration = total }
         guard time.isFinite else { return }
         if !isScrubbing { currentTime = time }
         subtitle = cues.first { $0.start <= time && time < $0.end }?.text
         segment = segments.first { $0.start <= time && time < $0.end - 1 }
+        if let segment, segment != autoSkipped, UserDefaults.standard.bool(forKey: SettingsKeys.animeAutoSkip) {
+            autoSkipped = segment
+            skip(segment)
+        }
     }
 }
 

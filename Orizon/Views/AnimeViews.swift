@@ -39,27 +39,41 @@ struct HomeModeSwitch: View {
 
 struct AnimeHomeView: View {
     @Binding var mode: HomeMode
-    @StateObject private var popular = PagedLoader<Anime>(key: Self.seriesKey) { try await AniverseAPI.shared.animeSearch(sort: .popularity, page: $0) }
-    @StateObject private var newest = PagedLoader<Anime>(key: Self.seriesKey) { try await AniverseAPI.shared.animeSearch(sort: .newest, page: $0) }
-
-    /// One card per show (every season of Attack on Titan shares one series id); films keep their own card.
-    private static func seriesKey(_ anime: Anime) -> AnyHashable { AnyHashable(anime.isMovie ? anime.id : anime.seriesId ?? anime.id) }
+    @EnvironmentObject private var store: AnimeStore
+    @StateObject private var popular = PagedLoader<Anime>(key: { $0.listKey }) { try await AniverseAPI.shared.animeSearch(sort: .popularity, page: $0) }
+    @StateObject private var upcoming = PagedLoader<Anime> { try await AniverseAPI.shared.animeCategory("upcoming", page: $0) }
+    @StateObject private var releases = PagedLoader<Anime> { try await AniverseAPI.shared.animeCategory("recently-updated", page: $0) }
+    @StateObject private var resumer = AnimeResumer()
     @State private var showSettings = false
 
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)]
+    private let releaseColumns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 30) {
+                LazyVStack(alignment: .leading, spacing: 34) {
+                    if !popular.items.isEmpty {
+                        AnimeHeroCarousel(animes: Array(popular.items.prefix(8)))
+                    } else {
+                        Color.clear.frame(height: 110)
+                    }
+
+                    if !store.history.isEmpty {
+                        VStack(alignment: .leading, spacing: 14) {
+                            SectionHeader(title: "Continuer à regarder")
+                            ContinueWatchingRow(items: Array(store.history.prefix(15)))
+                        }
+                    }
+
                     if !popular.items.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
                             SectionHeader(title: "Populaires")
                             ScrollView(.horizontal, showsIndicators: false) {
                                 LazyHStack(alignment: .top, spacing: 14) {
-                                    ForEach(popular.items.prefix(20)) { anime in
+                                    ForEach(popular.items) { anime in
                                         NavigationLink(value: anime) { AnimeCard(anime: anime).frame(width: 140) }
                                             .buttonStyle(.plain)
+                                            .task { await popular.loadMoreIfNeeded(current: anime) }
                                     }
                                 }
                                 .padding(.horizontal)
@@ -67,30 +81,34 @@ struct AnimeHomeView: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 14) {
-                        SectionHeader(title: "Nouveautés")
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(newest.items) { anime in
-                                NavigationLink(value: anime) { AnimeCard(anime: anime) }
-                                    .buttonStyle(.plain)
-                                    .task { await newest.loadMoreIfNeeded(current: anime) }
+                    if !upcoming.items.isEmpty {
+                        VStack(alignment: .leading, spacing: 14) {
+                            SectionHeader(title: "À venir")
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                LazyHStack(alignment: .top, spacing: 14) {
+                                    ForEach(upcoming.items) { anime in
+                                        NavigationLink(value: anime) { AnimeCard(anime: anime).frame(width: 140) }
+                                            .buttonStyle(.plain)
+                                            .task { await upcoming.loadMoreIfNeeded(current: anime) }
+                                    }
+                                    if upcoming.isLoading {
+                                        ProgressView().tint(Theme.pink).frame(width: 60, height: 200)
+                                    }
+                                }
+                                .padding(.horizontal)
                             }
                         }
-                        .padding(.horizontal)
-
-                        if newest.isLoading {
-                            ProgressView().tint(Theme.pink).frame(maxWidth: .infinity).padding()
-                        } else if let error = newest.error ?? popular.error {
-                            ErrorView(message: error) { Task { await reload() } }
-                        }
                     }
+
+                    releasesSection
                 }
-                .padding(.vertical)
                 .padding(.bottom, 30)
             }
+            .ignoresSafeArea(edges: .top)
             .background(Theme.background)
             .refreshable { await reload() }
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Logo() }
                 ToolbarItem(placement: .principal) { HomeModeSwitch(mode: $mode) }
@@ -106,19 +124,62 @@ struct AnimeHomeView: View {
             }
             .navigationDestination(for: Anime.self) { AnimeDetailView(anime: $0) }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .presentingPlayer(resumer)
             .task {
-                if popular.items.isEmpty { await popular.loadMore() }
-                if newest.items.isEmpty { await newest.loadMore() }
+                async let a: Void = loadIfEmpty(popular)
+                async let b: Void = loadIfEmpty(upcoming)
+                async let c: Void = loadIfEmpty(releases)
+                _ = await (a, b, c)
             }
         }
     }
 
+    private var releasesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                SectionHeader(title: "Dernières sorties")
+                Text("Triés par date de sortie du dernier épisode.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            }
+            LazyVGrid(columns: releaseColumns, alignment: .leading, spacing: 26) {
+                ForEach(releases.items) { anime in
+                    AnimeReleaseCard(anime: anime, loadingEpisode: loadingEpisode(anime)) { number in
+                        let language: AnimeLanguage = anime.subCount == 0 && anime.dubCount > 0 ? .dub : .sub
+                        resumer.open(series: anime, season: anime, language: language, episode: number,
+                                     loadingKey: "\(anime.id)-\(number)")
+                    }
+                    .task { await releases.loadMoreIfNeeded(current: anime) }
+                }
+            }
+            .padding(.horizontal)
+
+            if releases.isLoading {
+                ProgressView().tint(Theme.pink).frame(maxWidth: .infinity).padding()
+            } else if let error = releases.error ?? popular.error {
+                ErrorView(message: error) { Task { await reload() } }
+            }
+        }
+    }
+
+    private func loadingEpisode(_ anime: Anime) -> Int? {
+        guard let key = resumer.loading, key.hasPrefix(anime.id + "-") else { return nil }
+        return Int(key.dropFirst(anime.id.count + 1))
+    }
+
+    private func loadIfEmpty(_ loader: PagedLoader<Anime>) async {
+        if loader.items.isEmpty { await loader.loadMore() }
+    }
+
     private func reload() async {
         popular.reset { try await AniverseAPI.shared.animeSearch(sort: .popularity, page: $0) }
-        newest.reset { try await AniverseAPI.shared.animeSearch(sort: .newest, page: $0) }
+        upcoming.reset { try await AniverseAPI.shared.animeCategory("upcoming", page: $0) }
+        releases.reset { try await AniverseAPI.shared.animeCategory("recently-updated", page: $0) }
         async let a: Void = popular.loadMore()
-        async let b: Void = newest.loadMore()
-        _ = await (a, b)
+        async let b: Void = upcoming.loadMore()
+        async let c: Void = releases.loadMore()
+        _ = await (a, b, c)
     }
 }
 
@@ -169,11 +230,26 @@ struct AnimeDetailView: View {
     @State private var showExtras = false
     @State private var showFullSynopsis = false
     @EnvironmentObject private var episodeDownloads: EpisodeDownloads
+    @EnvironmentObject private var store: AnimeStore
+    @StateObject private var resumer = AnimeResumer()
 
     init(anime: Anime) {
         self.anime = anime
         _current = State(initialValue: anime)
-        _language = State(initialValue: anime.subCount == 0 && anime.dubCount > 0 ? .dub : .sub)
+        _language = State(initialValue: Self.preferredLanguage(sub: anime.subCount, dub: anime.dubCount))
+    }
+
+    /// The version chosen in the settings, unless this anime only exists in the other one.
+    static func preferredLanguage(sub: Int, dub: Int) -> AnimeLanguage {
+        let preferred = AnimeLanguage(rawValue: UserDefaults.standard.string(forKey: SettingsKeys.animeLanguage) ?? "") ?? .sub
+        switch preferred {
+        case .sub: return sub == 0 && dub > 0 ? .dub : .sub
+        case .dub: return dub == 0 && sub > 0 ? .sub : .dub
+        }
+    }
+
+    private var unwatched: [Episode] {
+        available.filter { !store.isWatched(animeId: current.id, episode: $0.number) }
     }
 
     private var available: [Episode] {
@@ -228,6 +304,21 @@ struct AnimeDetailView: View {
                     .padding(.horizontal)
                 }
 
+                if let progress = store.progress(series: anime) {
+                    Button { resumer.resume(progress) } label: {
+                        HStack {
+                            if resumer.loading == progress.id {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "play.fill")
+                            }
+                            Text(resumeTitle(progress)).lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(PillButtonStyle())
+                    .padding(.horizontal)
+                }
+
                 VStack(alignment: .leading, spacing: 12) {
                     Picker("Version", selection: $language) {
                         ForEach(AnimeLanguage.allCases) { Text($0.label).tag($0) }
@@ -267,16 +358,45 @@ struct AnimeDetailView: View {
             showExtras = extras.contains { $0.id == current.id }
         }
         .fullScreenCover(item: $playing) { AnimePlayerView(context: $0) }
+        .background { Color.clear.presentingPlayer(resumer) }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { store.toggleList(anime) } label: {
+                    Image(systemName: store.isInList(anime) ? "bookmark.fill" : "bookmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(store.isInList(anime) ? AnyShapeStyle(Theme.pink) : AnyShapeStyle(Color.white))
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(.ultraThinMaterial))
+                }
+                .accessibilityLabel(store.isInList(anime) ? "Retirer de ma liste" : "Ajouter à ma liste")
                 Menu {
-                    Button {
-                        episodeDownloads.enqueue(available, anime: current, language: language)
-                    } label: {
-                        Label("Télécharger les \(available.count) épisodes (\(language.label))", systemImage: "arrow.down.circle")
+                    Section("\(current.title) · \(language.label)") {
+                        Button {
+                            episodeDownloads.enqueue(available, anime: current, language: language)
+                        } label: {
+                            Label("Télécharger la saison (\(available.count) ép.)", systemImage: "arrow.down.circle")
+                        }
+                        Button {
+                            episodeDownloads.enqueue(unwatched, anime: current, language: language)
+                        } label: {
+                            Label("Télécharger les non vus (\(unwatched.count) ép.)", systemImage: "eye.slash")
+                        }
+                        .disabled(unwatched.isEmpty)
+                    }
+                    Section {
+                        Button {
+                            store.setWatched(true, animeId: current.id, episodes: available.map(\.number))
+                        } label: {
+                            Label("Marquer la saison comme vue", systemImage: "eye")
+                        }
+                        Button {
+                            store.setWatched(false, animeId: current.id, episodes: available.map(\.number))
+                        } label: {
+                            Label("Marquer la saison comme non vue", systemImage: "eye.slash")
+                        }
                     }
                 } label: {
-                    Image(systemName: "arrow.down.to.line")
+                    Image(systemName: "ellipsis")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .frame(width: 38, height: 38)
@@ -406,22 +526,34 @@ struct AnimeDetailView: View {
     private func row(_ episode: Episode) -> some View {
         HStack(spacing: 8) {
             Button {
-                playing = PlayerContext(anime: current, episodes: available, language: language, startEpisode: episode.number)
+                playing = PlayerContext(anime: current, series: anime, episodes: available, language: language, startEpisode: episode.number)
             } label: {
                 HStack(spacing: 14) {
-                    Text("\(episode.number)")
-                        .font(.headline.monospacedDigit())
-                        .frame(minWidth: 44, minHeight: 44)
-                        .padding(.horizontal, 4)
-                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surfaceHigh))
-                    VStack(alignment: .leading, spacing: 2) {
+                    let watched = store.isWatched(animeId: current.id, episode: episode.number)
+                    ZStack {
+                        if watched {
+                            Image(systemName: "checkmark").font(.headline.weight(.bold)).foregroundStyle(Theme.pink)
+                        } else {
+                            Text("\(episode.number)").font(.headline.monospacedDigit())
+                        }
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .padding(.horizontal, 4)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surfaceHigh))
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("Épisode \(episode.number)")
                             .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(watched ? .secondary : .primary)
                         if let title = episode.title, title != "Épisode \(episode.number)" {
                             Text(title)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                        }
+                        if !watched, let partial = store.partial(animeId: current.id, language: language, episode: episode.number, duration: nil) {
+                            ProgressView(value: min(max(partial, 0), 1))
+                                .tint(Theme.pink)
+                                .frame(maxWidth: 140)
                         }
                     }
                     Spacer(minLength: 0)
@@ -433,6 +565,28 @@ struct AnimeDetailView: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.surface))
+        .contextMenu {
+            if store.isWatched(animeId: current.id, episode: episode.number) {
+                Button { store.setWatched(false, animeId: current.id, episodes: [episode.number]) } label: {
+                    Label("Marquer comme non vu", systemImage: "eye.slash")
+                }
+            } else {
+                Button { store.setWatched(true, animeId: current.id, episodes: [episode.number]) } label: {
+                    Label("Marquer comme vu", systemImage: "eye")
+                }
+            }
+            Button {
+                store.setWatched(true, animeId: current.id, episodes: available.filter { $0.number <= episode.number }.map(\.number))
+            } label: {
+                Label("Marquer jusqu'ici comme vus", systemImage: "checkmark.circle")
+            }
+        }
+    }
+
+    private func resumeTitle(_ progress: WatchProgress) -> String {
+        let season = progress.season.id == anime.id ? "" : "\(progress.season.title) · "
+        if progress.isFinished { return "Continuer · \(season)après l'ép. \(progress.episode)" }
+        return "Reprendre · \(season)Ép. \(progress.episode)"
     }
 
     private func select(_ season: AnimeSeason) {
@@ -456,7 +610,9 @@ struct AnimeDetailView: View {
                 current.subCount = fresh.sub
                 current.dubCount = fresh.dub
             }
-            if current.subCount == 0 && current.dubCount > 0 { language = .dub }
+            if (language == .sub ? current.subCount : current.dubCount) == 0 {
+                language = Self.preferredLanguage(sub: current.subCount, dub: current.dubCount)
+            }
             episodes = loaded
         } catch {
             guard target == current.id else { return }
