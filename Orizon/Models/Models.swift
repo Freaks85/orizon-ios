@@ -7,6 +7,12 @@ struct MangaSummary: Codable, Hashable, Identifiable {
     var title: String
     var cover: URL?
     var subtitle: String?
+    var banner: URL? = nil
+    var synopsis: String? = nil
+    /// Already translated, e.g. "En cours".
+    var status: String? = nil
+    /// "Manga", "Manhwa", "Manhua"…
+    var kind: String? = nil
 
     var id: String { slug }
 }
@@ -23,9 +29,11 @@ struct MangaDetails: Codable, Hashable {
     var artists: [String]
     var genres: [String]
     var isAdult: Bool
+    var kind: String? = nil
 
     var summary: MangaSummary {
-        MangaSummary(slug: slug, title: title, cover: cover, subtitle: nil)
+        MangaSummary(slug: slug, title: title, cover: cover, subtitle: nil,
+                     banner: banner, synopsis: description, status: status, kind: kind)
     }
 }
 
@@ -78,6 +86,19 @@ enum SortOrder: String, CaseIterable, Identifiable {
         case .newest: return "Plus récents"
         case .rating: return "Note"
         case .title: return "Titre"
+        }
+    }
+}
+
+enum MangaKind {
+    static func label(type: String?, country: String?) -> String? {
+        switch (country ?? "").uppercased() {
+        case "KR": return "Manhwa"
+        case "CN", "TW", "HK": return "Manhua"
+        case "JP": return "Manga"
+        default:
+            guard let type, !type.isEmpty else { return nil }
+            return type.uppercased() == "MANGA" ? "Manga" : type.capitalized
         }
     }
 }

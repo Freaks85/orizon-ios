@@ -82,6 +82,8 @@ final class LibraryStore: ObservableObject {
         entry.chapters = chapters
         entry.manga.title = manga.title
         if manga.cover != nil { entry.manga.cover = manga.cover }
+        if manga.status != nil { entry.manga.status = manga.status }
+        if manga.kind != nil { entry.manga.kind = manga.kind }
         entry.newChapterIds = Array(Set(entry.newChapterIds + fresh)).filter { id in chapters.contains { $0.id == id } }
         entry.lastChecked = Date()
         state.entries[manga.slug] = entry

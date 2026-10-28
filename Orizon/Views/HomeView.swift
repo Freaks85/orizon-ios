@@ -39,7 +39,6 @@ final class HomeModel: ObservableObject {
 struct HomeView: View {
     @EnvironmentObject private var library: LibraryStore
     @StateObject private var model = HomeModel()
-    @State private var reader: ReaderContext?
     @State private var showSettings = false
 
     var body: some View {
@@ -47,13 +46,15 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     if !model.popular.isEmpty {
-                        FeaturedCarousel(mangas: Array(model.popular.prefix(8)))
+                        HeroCarousel(mangas: Array(model.popular.prefix(8)))
+                    } else {
+                        Color.clear.frame(height: 100)
                     }
 
                     if !library.continueReading.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            SectionHeader(title: "Reprendre la lecture")
-                            ContinueReadingRow(items: Array(library.continueReading.prefix(12)))
+                            SectionHeader(title: "Historique")
+                            HistoryRow(items: Array(library.continueReading.prefix(15)))
                         }
                     }
 
@@ -73,14 +74,23 @@ struct HomeView: View {
                         ErrorView(message: error) { Task { await model.load() } }
                     }
                 }
-                .padding(.vertical)
+                .padding(.bottom)
             }
+            .ignoresSafeArea(edges: .top)
             .background(Theme.background)
             .refreshable { await model.load() }
-            .navigationTitle("Aniverse")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Logo() }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                    Button { showSettings = true } label: {
+                        Image(systemName: "gearshape.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                            .frame(width: 38, height: 38)
+                            .background(Circle().fill(.ultraThinMaterial))
+                    }
                 }
             }
             .navigationDestination(for: MangaSummary.self) { MangaDetailView(manga: $0) }
@@ -106,75 +116,172 @@ struct HomeView: View {
     }
 }
 
-struct FeaturedCarousel: View {
-    let mangas: [MangaSummary]
-
+struct Logo: View {
     var body: some View {
-        TabView {
-            ForEach(mangas) { manga in
-                NavigationLink(value: manga) {
-                    ZStack(alignment: .bottomLeading) {
-                        RemoteImage(url: manga.cover)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .blur(radius: 18)
-                            .overlay(Color.black.opacity(0.35))
-                            .clipped()
-                        HStack(alignment: .bottom, spacing: 14) {
-                            MangaCover(url: manga.cover, cornerRadius: 10)
-                                .frame(width: 105)
-                                .shadow(radius: 10)
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("POPULAIRE")
-                                    .font(.caption2.weight(.heavy))
-                                    .foregroundStyle(Theme.pink)
-                                Text(manga.title)
-                                    .font(.title3.weight(.bold))
-                                    .lineLimit(3)
-                                    .foregroundStyle(.white)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(16)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .padding(.horizontal)
-                }
-                .buttonStyle(.plain)
-            }
+        HStack(spacing: 6) {
+            Image(systemName: "book.pages.fill")
+                .foregroundStyle(Theme.gradient)
+            Text("Orizon")
+                .font(.system(.title3, design: .rounded).weight(.heavy))
+                .foregroundStyle(.white)
         }
-        .tabViewStyle(.page(indexDisplayMode: .automatic))
-        .frame(height: 210)
+        .shadow(color: .black.opacity(0.4), radius: 6)
     }
 }
 
-struct ContinueReadingRow: View {
+/// Full-width featured mangas, in the style of aniverse.fr's home page.
+struct HeroCarousel: View {
+    let mangas: [MangaSummary]
+    @State private var selection = 0
+
+    var body: some View {
+        VStack(spacing: 14) {
+            TabView(selection: $selection) {
+                ForEach(Array(mangas.enumerated()), id: \.element.id) { index, manga in
+                    HeroPage(manga: manga).tag(index)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(height: 560)
+
+            HStack(spacing: 7) {
+                ForEach(mangas.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(index == selection ? Color.white : Color.white.opacity(0.35))
+                        .frame(width: index == selection ? 22 : 8, height: 8)
+                        .animation(.easeInOut(duration: 0.25), value: selection)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .task(id: selection) {
+            // Auto-advance; restarts whenever the user swipes.
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if Task.isCancelled || mangas.isEmpty { return }
+            withAnimation { selection = (selection + 1) % mangas.count }
+        }
+    }
+}
+
+struct HeroPage: View {
+    let manga: MangaSummary
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.clear
+                .overlay { RemoteImage(url: manga.cover ?? manga.banner) }
+                .clipped()
+
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.45), location: 0),
+                    .init(color: .clear, location: 0.25),
+                    .init(color: .clear, location: 0.45),
+                    .init(color: Theme.background.opacity(0.85), location: 0.78),
+                    .init(color: Theme.background, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(manga.title)
+                    .font(.system(size: 32, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(3)
+                    .shadow(color: .black.opacity(0.6), radius: 8)
+
+                let tags = [manga.kind, manga.status].compactMap { $0 }
+                if !tags.isEmpty {
+                    Text(tags.joined(separator: " · "))
+                        .font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.35)))
+                        .foregroundStyle(.white)
+                }
+
+                if let synopsis = manga.synopsis {
+                    Text(synopsis)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(2)
+                }
+
+                NavigationLink(value: manga) {
+                    Label("Voir le manga", systemImage: "play.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(Capsule().fill(.ultraThinMaterial))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.25)))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+        }
+    }
+}
+
+/// "Historique": the mangas being read, most recent first.
+struct HistoryRow: View {
     let items: [ReadingProgress]
+    @EnvironmentObject private var library: LibraryStore
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: 12) {
+            LazyHStack(alignment: .top, spacing: 14) {
                 ForEach(items, id: \.manga.slug) { item in
                     NavigationLink(value: item.manga) {
                         VStack(alignment: .leading, spacing: 6) {
-                            MangaCover(url: item.manga.cover)
+                            MangaCover(url: item.manga.cover, cornerRadius: 16)
+                                .overlay(alignment: .topLeading) {
+                                    if let status = item.manga.status {
+                                        Text(status)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(status == "En cours" ? Color.green : Theme.pink)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Capsule().fill(.black.opacity(0.65)))
+                                            .padding(8)
+                                    }
+                                }
+                                .overlay(alignment: .topTrailing) {
+                                    Button {
+                                        withAnimation { library.removeProgress(item.manga.slug) }
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(.white)
+                                            .frame(width: 28, height: 28)
+                                            .background(Circle().fill(.black.opacity(0.6)))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(8)
+                                }
                                 .overlay(alignment: .bottom) {
                                     GeometryReader { geo in
                                         let progress = item.pageCount > 0 ? Double(item.pageIndex + 1) / Double(item.pageCount) : 0
-                                        Capsule()
-                                            .fill(Theme.gradient)
-                                            .frame(width: geo.size.width * progress, height: 4)
-                                            .frame(maxHeight: .infinity, alignment: .bottom)
+                                        ZStack(alignment: .leading) {
+                                            Capsule().fill(Color.white.opacity(0.2))
+                                            Capsule().fill(Theme.gradient).frame(width: geo.size.width * progress)
+                                        }
+                                        .frame(height: 4)
+                                        .frame(maxHeight: .infinity, alignment: .bottom)
                                     }
-                                    .padding(6)
+                                    .padding(10)
                                 }
                             Text(item.manga.title)
-                                .font(.footnote.weight(.semibold))
+                                .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
-                            Text("Chapitre \(item.chapterNumber)")
-                                .font(.caption2)
-                                .foregroundStyle(Theme.pink)
+                            Text("Chapitre \(item.chapterNumber) · \(item.updatedAt.relative)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                        .frame(width: 118)
+                        .frame(width: 165)
                     }
                     .buttonStyle(.plain)
                 }

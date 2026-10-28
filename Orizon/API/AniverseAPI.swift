@@ -106,11 +106,16 @@ final class AniverseAPI {
            let number = latest["number"] as? String {
             subtitle = "Chapitre \(number)"
         }
+        let synopsis = (item["description"] as? String).map(Self.plainText)
         return MangaSummary(
             slug: slug,
             title: title,
             cover: (item["image"] as? String).flatMap(URL.init(string:)),
-            subtitle: subtitle
+            subtitle: subtitle,
+            banner: (item["coverImage"] as? String).flatMap(URL.init(string:)),
+            synopsis: synopsis?.isEmpty == true ? nil : synopsis,
+            status: (item["status"] as? String).map { MangaStatus.label($0) },
+            kind: MangaKind.label(type: item["type"] as? String, country: item["countryOfOrigin"] as? String)
         )
     }
 
@@ -156,7 +161,8 @@ final class AniverseAPI {
             authors: manga["authors"] as? [String] ?? [],
             artists: manga["artists"] as? [String] ?? [],
             genres: manga["genres"] as? [String] ?? [],
-            isAdult: manga["isAdult"] as? Bool ?? false
+            isAdult: manga["isAdult"] as? Bool ?? false,
+            kind: MangaKind.label(type: manga["format"] as? String, country: manga["countryOfOrigin"] as? String)
         )
     }
 
