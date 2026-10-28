@@ -12,33 +12,23 @@ struct ReaderContext: Identifiable {
 
 @MainActor
 final class HomeModel: ObservableObject {
-    @Published var latest: [MangaSummary] = []
     @Published var popular: [MangaSummary] = []
-    @Published var newest: [MangaSummary] = []
     @Published var error: String?
-    @Published var isLoading = false
 
     func load() async {
-        isLoading = true
         error = nil
-        async let latestResult = AniverseAPI.shared.latest(page: 1)
-        async let popularResult = AniverseAPI.shared.search(sort: .popularity, page: 1)
-        async let newestResult = AniverseAPI.shared.search(sort: .newest, page: 1)
         do {
-            let (l, p, n) = try await (latestResult, popularResult, newestResult)
-            latest = l.items
-            popular = p.items
-            newest = n.items
+            popular = try await AniverseAPI.shared.search(sort: .popularity, page: 1).items
         } catch {
             self.error = error.localizedDescription
         }
-        isLoading = false
     }
 }
 
 struct HomeView: View {
     @EnvironmentObject private var library: LibraryStore
     @StateObject private var model = HomeModel()
+    @StateObject private var releases = PagedLoader { try await AniverseAPI.shared.latest(page: $0) }
     @State private var showSettings = false
     @State private var reader: ReaderContext?
     @State private var openingChapter: String?
@@ -49,63 +39,53 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
+                LazyVStack(alignment: .leading, spacing: 34) {
                     if !model.popular.isEmpty {
                         HeroCarousel(mangas: Array(model.popular.prefix(8)))
                     } else {
-                        Color.clear.frame(height: 100)
+                        Color.clear.frame(height: 110)
                     }
 
                     if !library.continueReading.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 14) {
                             SectionHeader(title: "Historique")
                             HistoryRow(items: Array(library.continueReading.prefix(15)))
                         }
                     }
 
-                    genresRow
-
-                    if !model.latest.isEmpty {
+                    if !model.popular.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                SectionHeader(title: "Sorties récentes") {
-                                    NavigationLink {
-                                        ReleasesScreen()
-                                    } label: {
-                                        Text("Tout voir").font(.subheadline).foregroundStyle(Theme.pink)
+                            SectionHeader(title: "Populaires") {
+                                NavigationLink {
+                                    PagedGridScreen(title: "Populaires") { try await AniverseAPI.shared.search(sort: .popularity, page: $0) }
+                                } label: {
+                                    Text("Tout voir").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.pink)
+                                }
+                            }
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                LazyHStack(alignment: .top, spacing: 14) {
+                                    ForEach(Array(model.popular.prefix(20).enumerated()), id: \.element.id) { index, manga in
+                                        TrendCard(manga: manga, rank: index + 1)
                                     }
                                 }
-                                Text("Triés par date de sortie du dernier chapitre.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal)
+                                .padding(.horizontal)
                             }
-                            LazyVGrid(columns: releaseColumns, spacing: 22) {
-                                ForEach(model.latest.prefix(10)) { manga in
-                                    ReleaseCard(manga: manga) { open($0, of: manga) }
-                                }
-                            }
-                            .padding(.horizontal)
                         }
                     }
-                    section("Populaires", items: model.popular) {
-                        PagedGridScreen(title: "Populaires") { try await AniverseAPI.shared.search(sort: .popularity, page: $0) }
-                    }
-                    section("Nouveautés", items: model.newest) {
-                        PagedGridScreen(title: "Nouveautés") { try await AniverseAPI.shared.search(sort: .newest, page: $0) }
-                    }
 
-                    if model.isLoading && model.latest.isEmpty {
-                        ProgressView().tint(Theme.pink).frame(maxWidth: .infinity).padding(40)
-                    } else if let error = model.error, model.latest.isEmpty {
-                        ErrorView(message: error) { Task { await model.load() } }
+                    genresRow
+
+                    releasesSection
+
+                    if let error = model.error, model.popular.isEmpty, releases.items.isEmpty {
+                        ErrorView(message: error) { Task { await reload() } }
                     }
                 }
-                .padding(.bottom)
+                .padding(.bottom, 30)
             }
             .ignoresSafeArea(edges: .top)
             .background(Theme.background)
-            .refreshable { await model.load() }
+            .refreshable { await reload() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
@@ -135,12 +115,47 @@ struct HomeView: View {
             } message: {
                 Text(openError ?? "")
             }
-            .task { if model.latest.isEmpty { await model.load() } }
+            .task {
+                if model.popular.isEmpty { await model.load() }
+                if releases.items.isEmpty { await releases.loadMore() }
+            }
+        }
+    }
+
+    private func reload() async {
+        releases.reset { try await AniverseAPI.shared.latest(page: $0) }
+        async let popular: Void = model.load()
+        async let latest: Void = releases.loadMore()
+        _ = await (popular, latest)
+    }
+
+    private var releasesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                SectionHeader(title: "Sorties récentes")
+                Text("Triés par date de sortie du dernier chapitre.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            }
+            LazyVGrid(columns: releaseColumns, alignment: .leading, spacing: 26) {
+                ForEach(releases.items) { manga in
+                    ReleaseCard(manga: manga) { open($0, of: manga) }
+                        .task { await releases.loadMoreIfNeeded(current: manga) }
+                }
+            }
+            .padding(.horizontal)
+
+            if releases.isLoading {
+                ProgressView().tint(Theme.pink).frame(maxWidth: .infinity).padding()
+            } else if let error = releases.error {
+                ErrorView(message: error) { Task { await releases.loadMore() } }
+            }
         }
     }
 
     private var genresRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Genres")
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
@@ -170,22 +185,6 @@ struct HomeView: View {
                 reader = ReaderContext(manga: manga, chapters: chapters, startChapterId: chapter.id)
             } catch {
                 openError = error.localizedDescription
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func section<Destination: View>(_ title: String, items: [MangaSummary], @ViewBuilder destination: @escaping () -> Destination) -> some View {
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: title) {
-                    NavigationLink {
-                        destination()
-                    } label: {
-                        Text("Tout voir").font(.subheadline).foregroundStyle(Theme.pink)
-                    }
-                }
-                MangaRow(mangas: items)
             }
         }
     }
@@ -236,8 +235,10 @@ struct ReleasesScreen: View {
 struct Logo: View {
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "book.pages.fill")
-                .foregroundStyle(Theme.gradient)
+            Image("LogoMark")
+                .resizable()
+                .frame(width: 30, height: 30)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             Text("Orizon")
                 .font(.system(.title3, design: .rounded).weight(.heavy))
                 .foregroundStyle(.white)
@@ -352,58 +353,84 @@ struct HistoryRow: View {
             LazyHStack(alignment: .top, spacing: 14) {
                 ForEach(items, id: \.manga.slug) { item in
                     NavigationLink(value: item.manga) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            MangaCover(url: item.manga.cover, cornerRadius: 16)
-                                .overlay(alignment: .topLeading) {
-                                    if let status = item.manga.status {
-                                        Text(status)
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(status == "En cours" ? Color.green : Theme.pink)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 5)
-                                            .background(Capsule().fill(.black.opacity(0.65)))
-                                            .padding(8)
-                                    }
-                                }
-                                .overlay(alignment: .topTrailing) {
-                                    Button {
-                                        withAnimation { library.removeProgress(item.manga.slug) }
-                                    } label: {
-                                        Image(systemName: "xmark")
-                                            .font(.caption.weight(.bold))
-                                            .foregroundStyle(.white)
-                                            .frame(width: 28, height: 28)
-                                            .background(Circle().fill(.black.opacity(0.6)))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(8)
-                                }
-                                .overlay(alignment: .bottom) {
-                                    GeometryReader { geo in
-                                        let progress = item.pageCount > 0 ? Double(item.pageIndex + 1) / Double(item.pageCount) : 0
-                                        ZStack(alignment: .leading) {
-                                            Capsule().fill(Color.white.opacity(0.2))
-                                            Capsule().fill(Theme.gradient).frame(width: geo.size.width * progress)
-                                        }
-                                        .frame(height: 4)
-                                        .frame(maxHeight: .infinity, alignment: .bottom)
-                                    }
-                                    .padding(10)
-                                }
-                            Text(item.manga.title)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            Text("Chapitre \(item.chapterNumber) · \(item.updatedAt.relative)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .frame(width: 165)
+                        HistoryCard(item: item)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal)
         }
+    }
+}
+
+struct HistoryCard: View {
+    let item: ReadingProgress
+    @EnvironmentObject private var library: LibraryStore
+
+    private var progress: Double {
+        item.pageCount > 0 ? Double(item.pageIndex + 1) / Double(item.pageCount) : 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Color.clear
+                .frame(height: 120)
+                .overlay { RemoteImage(url: item.manga.banner ?? item.manga.cover) }
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    if let status = item.manga.status {
+                        StatusBadge(status: status).padding(8)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    Button {
+                        withAnimation { library.removeProgress(item.manga.slug) }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(.black.opacity(0.6)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                }
+
+            HStack {
+                Text("Chapitre \(item.chapterNumber)")
+                Spacer()
+                Text("Page \(item.pageIndex + 1) sur \(item.pageCount)")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Text(item.manga.title)
+                .font(.system(size: 19, weight: .heavy))
+                .fontWidth(.condensed)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Progression de lecture")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Ch. \(item.chapterNumber)")
+                        .fontWeight(.semibold)
+                }
+                .font(.caption)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.12))
+                        Capsule().fill(Theme.gradient).frame(width: max(6, geo.size.width * progress))
+                    }
+                }
+                .frame(height: 6)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
+        }
+        .frame(width: 200)
     }
 }

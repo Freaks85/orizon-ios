@@ -45,7 +45,8 @@ struct SectionHeader<Trailing: View>: View {
     var body: some View {
         HStack {
             Text(title)
-                .font(.title3.weight(.bold))
+                .font(.system(size: 26, weight: .heavy))
+                .fontWidth(.condensed)
             Spacer()
             trailing()
         }

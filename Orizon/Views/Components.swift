@@ -101,22 +101,13 @@ struct ReleaseCard: View {
             }
             .buttonStyle(.plain)
             .overlay(alignment: .topTrailing) {
-                Button {
-                    library.toggle(manga, chapters: [])
-                } label: {
-                    Image(systemName: library.contains(manga.slug) ? "bookmark.fill" : "bookmark")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(library.contains(manga.slug) ? Theme.pink : .white)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(.black.opacity(0.6)))
-                }
-                .buttonStyle(.plain)
-                .padding(8)
+                BookmarkButton(manga: manga).padding(8)
             }
 
             NavigationLink(value: manga) {
                 Text(manga.title)
-                    .font(.subheadline.weight(.bold))
+                    .font(.system(size: 18, weight: .heavy))
+                    .fontWidth(.condensed)
                     .lineLimit(1)
                     .foregroundStyle(.primary)
             }
@@ -124,32 +115,112 @@ struct ReleaseCard: View {
 
             ForEach(manga.latestChapters.prefix(2)) { chapter in
                 Button { openChapter(chapter) } label: {
-                    HStack {
-                        Text("Ch. \(chapter.number)")
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(chapter.isNew ? Color.primary : .secondary)
-                        Spacer(minLength: 4)
-                        if chapter.isPremium {
-                            Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.yellow)
-                        } else if chapter.isNew {
-                            Text("NOUVEAU")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(Theme.pink)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Theme.pink.opacity(0.15)))
-                        } else if let date = chapter.date {
-                            Text(date.relative)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                    .contentShape(Rectangle())
+                    ChapterPill(chapter: chapter)
                 }
                 .buttonStyle(.plain)
             }
         }
+    }
+}
+
+/// "Ch. 59 · NOUVEAU" line used on release cards.
+struct ChapterPill: View {
+    let chapter: Chapter
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Ch. \(chapter.number)")
+                .font(.footnote.weight(.bold))
+                .foregroundStyle(chapter.isNew ? AnyShapeStyle(Theme.gradient) : AnyShapeStyle(Color.white.opacity(0.75)))
+            Spacer(minLength: 4)
+            if chapter.isPremium {
+                Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.yellow)
+            } else if chapter.isNew {
+                Text("NOUVEAU")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Theme.gradient))
+            } else if let date = chapter.date {
+                Text(date.relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(chapter.isNew ? Theme.purple.opacity(0.14) : Color.white.opacity(0.05))
+        )
+        .contentShape(Rectangle())
+    }
+}
+
+/// Big card for the horizontal "Populaires" row.
+struct TrendCard: View {
+    let manga: MangaSummary
+    let rank: Int
+
+    @EnvironmentObject private var library: LibraryStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            NavigationLink(value: manga) {
+                MangaCover(url: manga.cover, cornerRadius: 18)
+                    .overlay(alignment: .bottomLeading) {
+                        Text("\(rank)")
+                            .font(.system(size: 54, weight: .black))
+                            .fontWidth(.condensed)
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.8), radius: 8)
+                            .padding(.leading, 10)
+                            .padding(.bottom, -4)
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if let flag = manga.flag {
+                            FlagBadge(flag: flag).padding(8)
+                        } else if let status = manga.status {
+                            StatusBadge(status: status).padding(8)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .overlay(alignment: .topTrailing) {
+                BookmarkButton(manga: manga).padding(8)
+            }
+
+            Text(manga.title)
+                .font(.system(size: 18, weight: .heavy))
+                .fontWidth(.condensed)
+                .lineLimit(1)
+            let tags = [manga.status, manga.kind].compactMap { $0 }
+            if !tags.isEmpty {
+                Text(tags.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 190)
+    }
+}
+
+struct BookmarkButton: View {
+    let manga: MangaSummary
+    @EnvironmentObject private var library: LibraryStore
+
+    var body: some View {
+        Button {
+            library.toggle(manga, chapters: [])
+        } label: {
+            Image(systemName: library.contains(manga.slug) ? "bookmark.fill" : "bookmark")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(library.contains(manga.slug) ? Theme.pink : .white)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(.black.opacity(0.6)))
+        }
+        .buttonStyle(.plain)
     }
 }
 
