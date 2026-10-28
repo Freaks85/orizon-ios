@@ -1,4 +1,3 @@
-import AVKit
 import SwiftUI
 
 enum HomeMode: CaseIterable {
@@ -145,23 +144,23 @@ struct AnimeCard: View {
 
 struct AnimeDetailView: View {
     let anime: Anime
+    /// The season whose episodes are listed; starts on the anime that was opened.
+    @State private var current: Anime
+    @State private var seasons: [AnimeSeason] = []
     @State private var episodes: [Episode] = []
-    @State private var subCount: Int
-    @State private var dubCount: Int
     @State private var language: AnimeLanguage
+    @State private var isLoading = false
     @State private var error: String?
-    @State private var opening: Int?
-    @State private var playError: String?
+    @State private var playing: PlayerContext?
 
     init(anime: Anime) {
         self.anime = anime
-        _subCount = State(initialValue: anime.subCount)
-        _dubCount = State(initialValue: anime.dubCount)
+        _current = State(initialValue: anime)
         _language = State(initialValue: anime.subCount == 0 && anime.dubCount > 0 ? .dub : .sub)
     }
 
     private var available: [Episode] {
-        let count = language == .sub ? subCount : dubCount
+        let count = language == .sub ? current.subCount : current.dubCount
         return episodes.filter { $0.number <= count }
     }
 
@@ -188,27 +187,39 @@ struct AnimeDetailView: View {
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.85))
                     }
+                }
+                .padding(.horizontal)
+
+                if seasons.count > 1 {
+                    seasonPicker
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
                     Picker("Version", selection: $language) {
                         ForEach(AnimeLanguage.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    .padding(.top, 6)
-                    Text("Épisodes")
+                    Text(seasons.count > 1 ? current.title : "Épisodes")
                         .font(.system(size: 22, weight: .heavy))
                         .fontWidth(.condensed)
+                        .lineLimit(2)
                 }
                 .padding(.horizontal)
 
                 ForEach(available) { episode in
-                    Button { play(episode) } label: { row(episode) }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal)
+                    Button {
+                        playing = PlayerContext(anime: current, episodes: available, language: language, startEpisode: episode.number)
+                    } label: {
+                        row(episode)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal)
                 }
 
-                if let error {
-                    ErrorView(message: error) { Task { await load() } }
-                } else if episodes.isEmpty {
+                if isLoading {
                     ProgressView().tint(Theme.pink).frame(maxWidth: .infinity).padding()
+                } else if let error {
+                    ErrorView(message: error) { Task { await load() } }
                 } else if available.isEmpty {
                     Text("Aucun épisode en \(language.label).")
                         .foregroundStyle(.secondary)
@@ -222,10 +233,48 @@ struct AnimeDetailView: View {
         .background(Theme.background)
         .navigationBarTitleDisplayMode(.inline)
         .task { if episodes.isEmpty { await load() } }
-        .alert("Impossible de lancer l'épisode", isPresented: Binding(get: { playError != nil }, set: { if !$0 { playError = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(playError ?? "")
+        .task { if seasons.isEmpty { seasons = (try? await AniverseAPI.shared.seasons(animeId: anime.id)) ?? [] } }
+        .fullScreenCover(item: $playing) { AnimePlayerView(context: $0) }
+    }
+
+    private var seasonPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Saisons")
+                .font(.system(size: 22, weight: .heavy))
+                .fontWidth(.condensed)
+                .padding(.horizontal)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 12) {
+                        ForEach(seasons) { season in
+                            let selected = season.id == current.id
+                            Button { select(season) } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    MangaCover(url: season.image, cornerRadius: 10)
+                                        .overlay {
+                                            if selected {
+                                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                    .strokeBorder(Theme.pink, lineWidth: 2)
+                                            }
+                                        }
+                                    Text(season.name)
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(2, reservesSpace: true)
+                                    if let type = season.type {
+                                        Text(type).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(width: 100)
+                                .opacity(selected ? 1 : 0.65)
+                            }
+                            .buttonStyle(.plain)
+                            .id(season.id)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                .onAppear { proxy.scrollTo(current.id, anchor: .center) }
+            }
         }
     }
 
@@ -247,108 +296,42 @@ struct AnimeDetailView: View {
                 }
             }
             Spacer()
-            if opening == episode.number {
-                ProgressView().tint(Theme.pink)
-            } else {
-                Image(systemName: "play.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(Theme.gradient)
-            }
+            Image(systemName: "play.circle.fill")
+                .font(.title2)
+                .foregroundStyle(Theme.gradient)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.surface))
         .contentShape(Rectangle())
     }
 
+    private func select(_ season: AnimeSeason) {
+        guard season.id != current.id else { return }
+        current = season.id == anime.id ? anime : season.anime
+        episodes = []
+        Task { await load() }
+    }
+
     private func load() async {
+        let target = current.id
         error = nil
+        isLoading = true
         do {
-            async let list = AniverseAPI.shared.episodes(animeId: anime.id)
-            async let counts = AniverseAPI.shared.episodeCounts(animeId: anime.id)
-            episodes = try await list
-            if let counts = try? await counts {
-                subCount = counts.sub
-                dubCount = counts.dub
+            async let list = AniverseAPI.shared.episodes(animeId: target)
+            async let counts = AniverseAPI.shared.episodeCounts(animeId: target)
+            let loaded = try await list
+            let fresh = try? await counts
+            guard target == current.id else { return }
+            if let fresh {
+                current.subCount = fresh.sub
+                current.dubCount = fresh.dub
             }
+            if current.subCount == 0 && current.dubCount > 0 { language = .dub }
+            episodes = loaded
         } catch {
+            guard target == current.id else { return }
             self.error = error.localizedDescription
         }
-    }
-
-    private func play(_ episode: Episode) {
-        guard opening == nil else { return }
-        opening = episode.number
-        let language = language
-        Task {
-            defer { opening = nil }
-            do {
-                let api = AniverseAPI.shared
-                let stream = try await api.stream(animeId: anime.id, episode: episode.number, language: language)
-                // The VF stream carries the same full French subtitles: only show them in VOSTFR.
-                var cues: [SubtitleCue] = []
-                if language == .sub, let url = stream.subtitles {
-                    cues = (try? await api.subtitles(url)) ?? []
-                }
-                await MainActor.run { AnimePlayerController.present(url: stream.source, cues: cues) }
-            } catch {
-                playError = error.localizedDescription
-            }
-        }
-    }
-}
-
-/// Native full-screen player with subtitles drawn from the site's WebVTT track.
-final class AnimePlayerController: AVPlayerViewController {
-    private var cues: [SubtitleCue] = []
-    private let subtitleLabel = UILabel()
-    private var timeObserver: Any?
-
-    static func present(url: URL, cues: [SubtitleCue]) {
-        let controller = AnimePlayerController()
-        controller.cues = cues
-        controller.player = AVPlayer(url: url)
-        controller.modalPresentationStyle = .fullScreen
-        let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
-        guard var top = window?.rootViewController else { return }
-        while let presented = top.presentedViewController { top = presented }
-        top.present(controller, animated: true) { controller.player?.play() }
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-
-        guard let overlay = contentOverlayView else { return }
-        subtitleLabel.numberOfLines = 0
-        subtitleLabel.textAlignment = .center
-        subtitleLabel.textColor = .white
-        subtitleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
-        subtitleLabel.shadowColor = .black
-        subtitleLabel.shadowOffset = CGSize(width: 1, height: 1)
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        overlay.addSubview(subtitleLabel)
-        NSLayoutConstraint.activate([
-            subtitleLabel.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
-            subtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.safeAreaLayoutGuide.leadingAnchor, constant: 24),
-            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: overlay.safeAreaLayoutGuide.trailingAnchor, constant: -24),
-            subtitleLabel.bottomAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.bottomAnchor, constant: -28)
-        ])
-
-        guard !cues.isEmpty else { return }
-        timeObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 5), queue: .main) { [weak self] time in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let now = time.seconds
-                self.subtitleLabel.text = self.cues.first { $0.start <= now && now < $0.end }?.text
-            }
-        }
-    }
-
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        guard isBeingDismissed else { return }
-        player?.pause()
-        if let timeObserver { player?.removeTimeObserver(timeObserver) }
-        timeObserver = nil
+        isLoading = false
     }
 }

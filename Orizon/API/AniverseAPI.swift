@@ -266,7 +266,8 @@ extension AniverseAPI {
             status: (item["status"] as? String).map { MangaStatus.label($0) },
             format: item["type"] as? String,
             subCount: item["episodeSub"] as? Int ?? 0,
-            dubCount: item["episodeDub"] as? Int ?? 0
+            dubCount: item["episodeDub"] as? Int ?? 0,
+            malId: item["malId"] as? Int
         )
     }
 
@@ -284,6 +285,44 @@ extension AniverseAPI {
             byNumber[number] = Episode(number: number, title: item["titleFr"] as? String ?? item["episodeTitle"] as? String)
         }
         return byNumber.values.sorted { $0.number < $1.number }
+    }
+
+    /// Every season, OVA and film of the series the anime belongs to, in watching order.
+    func seasons(animeId: String) async throws -> [AnimeSeason] {
+        let json = try await getJSON("api/anime/seasons", query: [URLQueryItem(name: "animeId", value: animeId)])
+        let entries = (json["animeOrder"] as? [[String: Any]] ?? [])
+            .filter { $0["hidden"] as? Bool != true }
+            .sorted { ($0["seasonOrder"] as? Int ?? 0) < ($1["seasonOrder"] as? Int ?? 0) }
+        return entries.compactMap { entry in
+            guard let id = entry["animeId"] as? String, let slug = entry["slug"] as? String else { return nil }
+            return AnimeSeason(
+                id: id,
+                slug: slug,
+                name: entry["seasonName"] as? String ?? slug,
+                type: entry["seasonType"] as? String,
+                image: (entry["image"] as? String).flatMap(URL.init(string:))
+            )
+        }
+    }
+
+    /// Seasons reached from the series list carry no MyAnimeList id: read it from the anime page.
+    func malId(slug: String) async throws -> Int? {
+        let html = String(decoding: try await get("anime/\(slug)"), as: UTF8.self)
+        guard let range = html.range(of: #"malId\\?":\d+"#, options: .regularExpression) else { return nil }
+        return Int(html[range].filter(\.isNumber))
+    }
+
+    /// Opening and ending timings of an episode.
+    func segments(malId: Int, episode: Int) async throws -> [SkipSegment] {
+        let data = try await get("api/anime/segments", query: [
+            URLQueryItem(name: "malId", value: String(malId)),
+            URLQueryItem(name: "episode", value: String(episode))
+        ])
+        let list = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        return list.compactMap { item in
+            guard let start = item["start"] as? Double, let end = item["end"] as? Double, end > start else { return nil }
+            return SkipSegment(start: start, end: end, label: item["label"] as? String ?? "")
+        }
     }
 
     /// Number of episodes available in each version (fresher than the search counts).

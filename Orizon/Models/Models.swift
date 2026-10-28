@@ -184,6 +184,8 @@ struct Anime: Hashable, Identifiable {
     var format: String?
     var subCount: Int
     var dubCount: Int
+    /// MyAnimeList id, used for the opening/ending timings.
+    var malId: Int? = nil
 
     var versions: String {
         [subCount > 0 ? "VOSTFR" : nil, dubCount > 0 ? "VF" : nil].compactMap { $0 }.joined(separator: " · ")
@@ -203,6 +205,28 @@ enum AnimeLanguage: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var label: String { self == .sub ? "VOSTFR" : "VF" }
+}
+
+/// One entry of a series on Aniverse (season, OVA, film…), which lists each of them as a separate anime.
+struct AnimeSeason: Hashable, Identifiable {
+    let id: String
+    let slug: String
+    var name: String
+    var type: String?
+    var image: URL?
+
+    var anime: Anime {
+        Anime(id: id, slug: slug, title: name, cover: image, banner: nil, synopsis: nil, status: nil,
+              format: type, subCount: 0, dubCount: 0)
+    }
+}
+
+struct SkipSegment: Hashable {
+    let start: Double
+    let end: Double
+    let label: String
+
+    var isEnding: Bool { label.lowercased() == "ending" }
 }
 
 struct AnimeStream {
