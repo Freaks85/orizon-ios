@@ -29,6 +29,8 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var duration: Double = 0
     @Published private(set) var subtitle: String?
     @Published private(set) var segment: SkipSegment?
+    /// The timings of this episode were corrected by hand.
+    @Published private(set) var hasCustomTimings = false
     var isScrubbing = false
 
     private var cues: [SubtitleCue] = []
@@ -98,6 +100,7 @@ final class PlayerModel: ObservableObject {
         currentTime = 0
         duration = 0
         autoSkipped = nil
+        hasCustomTimings = false
         player.replaceCurrentItem(with: nil)
         if previous != number { deleteIfWatched(previous) }
         let anime = anime, language = language
@@ -139,11 +142,11 @@ final class PlayerModel: ObservableObject {
                     guard !Task.isCancelled else { return }
                     cues = loaded
                 }
-                if malId == nil { malId = try? await api.malId(slug: anime.slug) }
-                if let malId {
-                    let duration = try? await player.currentItem?.asset.load(.duration)
-                    var loaded = (try? await api.skipTimes(malId: malId, episode: number, length: duration?.seconds ?? 0)) ?? []
-                    if loaded.isEmpty { loaded = (try? await api.segments(malId: malId, episode: number)) ?? [] }
+                if let custom = AnimeStore.shared.skipOverride(animeId: anime.id, language: language, episode: number) {
+                    segments = custom
+                    hasCustomTimings = true
+                } else {
+                    let loaded = await fetchSegments(number)
                     guard !Task.isCancelled else { return }
                     segments = loaded
                 }
@@ -152,6 +155,41 @@ final class PlayerModel: ObservableObject {
                 isLoading = false
                 self.error = error.localizedDescription
             }
+        }
+    }
+
+    private func fetchSegments(_ number: Int) async -> [SkipSegment] {
+        let api = AniverseAPI.shared
+        if malId == nil { malId = try? await api.malId(slug: anime.slug) }
+        guard let malId else { return [] }
+        let duration = try? await player.currentItem?.asset.load(.duration)
+        let loaded = (try? await api.skipTimes(malId: malId, episode: number, length: duration?.seconds ?? 0)) ?? []
+        if !loaded.isEmpty { return loaded }
+        return (try? await api.segments(malId: malId, episode: number)) ?? []
+    }
+
+    /// AniSkip's timings are sometimes off for Aniverse's videos: the user marks where the opening
+    /// (or ending) really starts, it is kept for this episode and skipped right away.
+    func markSegment(_ label: String) {
+        let length = segments.first { $0.label == label }.map { $0.end - $0.start } ?? 90
+        let start = currentTime
+        let end = duration > 0 ? min(start + length, duration) : start + length
+        let marked = SkipSegment(start: start, end: end, label: label)
+        segments = (segments.filter { $0.label != label } + [marked]).sorted { $0.start < $1.start }
+        AnimeStore.shared.setSkipOverride(segments, animeId: anime.id, language: language, episode: episode)
+        hasCustomTimings = true
+        autoSkipped = marked
+        skip(marked)
+    }
+
+    func resetTimings() {
+        AnimeStore.shared.setSkipOverride(nil, animeId: anime.id, language: language, episode: episode)
+        hasCustomTimings = false
+        let number = episode
+        Task {
+            let loaded = await fetchSegments(number)
+            guard number == episode else { return }
+            segments = loaded
         }
     }
 
@@ -299,6 +337,25 @@ struct AnimePlayerView: View {
                             .foregroundStyle(.white.opacity(0.7))
                     }
                     Spacer()
+                    Menu {
+                        Button { model.markSegment("Opening") } label: {
+                            Label("L'opening commence maintenant", systemImage: "music.note")
+                        }
+                        Button { model.markSegment("Ending") } label: {
+                            Label("L'ending commence maintenant", systemImage: "music.note.list")
+                        }
+                        if model.hasCustomTimings {
+                            Button(role: .destructive) { model.resetTimings() } label: {
+                                Label("Rétablir les timings d'origine", systemImage: "arrow.uturn.backward")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: model.hasCustomTimings ? "forward.frame.fill" : "forward.frame")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(.black.opacity(0.35)))
+                    }
+                    .accessibilityLabel("Corriger l'opening ou l'ending")
                     roundButton("list.bullet") { showEpisodes = true }
                 }
 

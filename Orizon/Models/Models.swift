@@ -231,7 +231,7 @@ struct AnimeSeason: Hashable, Identifiable {
     }
 }
 
-struct SkipSegment: Hashable {
+struct SkipSegment: Codable, Hashable {
     let start: Double
     let end: Double
     let label: String

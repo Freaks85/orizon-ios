@@ -24,6 +24,9 @@ private struct AnimeState: Codable {
     var positions: [String: Double] = [:]
     /// Watched episodes, by "animeId-episode".
     var watched: Set<String> = []
+    /// Opening/ending timings corrected by hand in the player, by "animeId-language-episode".
+    /// Optional so that a file saved before this field existed still decodes.
+    var skipOverrides: [String: [SkipSegment]]?
 }
 
 /// Anime library ("Ma liste"), watch history, resume positions and watched episodes.
@@ -105,6 +108,19 @@ final class AnimeStore: ObservableObject {
         }
         state.history[series.seriesKey] = WatchProgress(series: series, season: season, episode: episode, language: language,
                                                         position: position, duration: duration, updatedAt: Date())
+        scheduleSave()
+    }
+
+    // MARK: - Timings corrected by hand
+
+    func skipOverride(animeId: String, language: AnimeLanguage, episode: Int) -> [SkipSegment]? {
+        state.skipOverrides?[Self.key(animeId, language, episode)]
+    }
+
+    func setSkipOverride(_ segments: [SkipSegment]?, animeId: String, language: AnimeLanguage, episode: Int) {
+        var overrides = state.skipOverrides ?? [:]
+        overrides[Self.key(animeId, language, episode)] = segments
+        state.skipOverrides = overrides
         scheduleSave()
     }
 
