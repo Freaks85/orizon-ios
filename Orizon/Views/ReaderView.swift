@@ -19,8 +19,8 @@ struct ReaderView: View {
     @State private var showDetails = false
     @State private var current: (chapterId: String, page: Int)?
     @State private var scrollTarget: String?
-    /// Position inside the target page to restore once the list is at that page's top.
-    @State private var restoreOffset: CGFloat = 0
+    /// Position inside the target page (0…1) to restore once the list shows that page.
+    @State private var restoreFraction: Double = 0
     @State private var tracker = ScrollTracker()
     @State private var items: [Item] = []
 
@@ -33,8 +33,10 @@ struct ReaderView: View {
         var count = 0
         var offset: Double = 0
         var dirty = false
-        /// The UIScrollView behind the SwiftUI List, used for pixel-exact restoring.
+        /// The UIScrollView behind the SwiftUI List: the position is read from it directly
+        /// (SwiftUI geometry is not updated while UIKit scrolls the list's cells).
         weak var scrollView: UIScrollView?
+        var observation: NSKeyValueObservation?
     }
 
     struct Segment: Identifiable {
@@ -136,37 +138,63 @@ struct ReaderView: View {
         .onDisappear { commitProgress() }
     }
 
-    /// List.scrollTo only aligns an item's top (arbitrary anchors are ignored), so restoring
-    /// "63 % into page 5" is done in two steps: scroll to the page's top, then move the
-    /// underlying scroll view down by the remaining distance.
+    /// Scrolls to the saved page, then puts the saved point inside it exactly at the top
+    /// of the screen using the list's real layout (List.scrollTo only aligns item tops).
     private func scroll(_ proxy: ScrollViewProxy, to target: String?) {
         guard let target else { return }
-        let extra = restoreOffset
+        let fraction = restoreFraction
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             proxy.scrollTo(target, anchor: .top)
         }
-        // Again once real row heights are known, then apply the offset inside the page.
+        // Again once real row heights are known, then place the exact point.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             proxy.scrollTo(target, anchor: .top)
             DispatchQueue.main.async {
-                if extra > 0, let scrollView = tracker.scrollView {
-                    let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
-                    var offset = scrollView.contentOffset
-                    // scrollTo(.top) leaves the page under the top inset; the saved position is
-                    // measured from the very top of the screen.
-                    offset.y = min(offset.y + extra + scrollView.adjustedContentInset.top, maxY)
-                    scrollView.setContentOffset(offset, animated: false)
+                if let scrollView = tracker.scrollView,
+                   let index = items.firstIndex(where: { $0.id == target }),
+                   let frame = Self.rowFrame(index, in: scrollView) {
+                    let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                    let y = frame.minY + CGFloat(fraction) * frame.height
+                    scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: min(max(y, 0), maxY)), animated: false)
                 }
-                restoreOffset = 0
+                restoreFraction = 0
                 scrollTarget = nil
             }
         }
     }
 
-    /// Height of a page as displayed (full screen width).
-    private func displayedHeight(of page: Page) -> CGFloat? {
-        guard let ratio = page.aspectRatio, ratio > 0 else { return nil }
-        return UIScreen.main.bounds.width / ratio
+    /// Frame of row `index` in the list's content coordinates.
+    private static func rowFrame(_ index: Int, in scrollView: UIScrollView) -> CGRect? {
+        if let collection = scrollView as? UICollectionView,
+           collection.numberOfSections > 0, index < collection.numberOfItems(inSection: 0) {
+            return collection.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame
+        }
+        if let table = scrollView as? UITableView,
+           table.numberOfSections > 0, index < table.numberOfRows(inSection: 0) {
+            return table.rectForRow(at: IndexPath(row: index, section: 0))
+        }
+        return nil
+    }
+
+    /// Row under a point of the list's content, with its frame.
+    private static func hitRow(at point: CGPoint, in scrollView: UIScrollView) -> (Int, CGRect)? {
+        if let collection = scrollView as? UICollectionView,
+           let indexPath = collection.indexPathForItem(at: point),
+           let frame = collection.layoutAttributesForItem(at: indexPath)?.frame {
+            return (indexPath.item, frame)
+        }
+        if let table = scrollView as? UITableView, let indexPath = table.indexPathForRow(at: point) {
+            return (indexPath.row, table.rectForRow(at: indexPath))
+        }
+        return nil
+    }
+
+    private func attach(_ scrollView: UIScrollView) {
+        guard tracker.scrollView !== scrollView else { return }
+        tracker.scrollView = scrollView
+        tracker.observation = scrollView.observe(\.contentOffset, options: [.new]) { scrollView, _ in
+            DispatchQueue.main.async { positionChanged(in: scrollView) }
+        }
     }
 
     // MARK: - Rows
@@ -176,16 +204,7 @@ struct ReaderView: View {
         switch item {
         case .page(let chapter, let index, let count, let page):
             ReaderPage(page: page)
-                .background(ScrollViewLocator { scrollView in
-                    if tracker.scrollView == nil { tracker.scrollView = scrollView }
-                })
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.onChange(of: geo.frame(in: .global).minY) { minY in
-                            track(chapter: chapter, index: index, count: count, minY: minY, height: geo.size.height)
-                        }
-                    }
-                )
+                .background(ScrollViewLocator { attach($0) })
                 .onAppear { pageAppeared(chapter: chapter, index: index, count: count) }
         case .divider(let finished, let next):
             VStack(spacing: 10) {
@@ -469,7 +488,7 @@ struct ReaderView: View {
             rebuildItems()
             current = (chapter.id, index)
             prefetch(pages, from: index)
-            restoreOffset = displayedHeight(of: pages[index]).map { CGFloat(offset) * $0 } ?? 0
+            restoreFraction = offset
             scrollTarget = "\(chapter.id)#\(index)"
         } catch {
             self.error = error.localizedDescription
@@ -493,13 +512,16 @@ struct ReaderView: View {
         }
     }
 
-    /// Called while scrolling: the page crossing the top of the screen is the one being read,
+    /// Called while scrolling: the page at the top of the screen is the one being read,
     /// and the part of it already above the top is the position inside that page.
-    private func track(chapter: Chapter, index: Int, count: Int, minY: CGFloat, height: CGFloat) {
-        guard height > 0, scrollTarget == nil else { return }
-        let topLine: CGFloat = 1
-        guard minY <= topLine, minY + height > topLine else { return }
-        let offset = Double(min(max((topLine - minY) / height, 0), 1))
+    private func positionChanged(in scrollView: UIScrollView) {
+        guard scrollTarget == nil else { return }
+        let point = CGPoint(x: scrollView.bounds.midX, y: scrollView.contentOffset.y + 1)
+        guard let hit = Self.hitRow(at: point, in: scrollView) else { return }
+        let (row, frame) = hit
+        guard frame.height > 0, row < items.count,
+              case .page(let chapter, let index, let count, _) = items[row] else { return }
+        let offset = Double(min(max((point.y - frame.minY) / frame.height, 0), 1))
 
         let chapterChanged = tracker.chapter?.id != chapter.id
         if chapterChanged || tracker.page != index {
