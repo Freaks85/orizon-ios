@@ -75,12 +75,11 @@ struct ReaderView: View {
                     .scrollContentBackground(.hidden)
                     .environment(\.defaultMinListRowHeight, 0)
                     .onChange(of: scrollTarget) { target in
-                        guard let target else { return }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            proxy.scrollTo(target, anchor: .top)
-                            scrollTarget = nil
-                        }
+                        scroll(proxy, to: target)
                     }
+                    // The list is created in the same update that sets the first target,
+                    // so onChange does not fire for it: handle it on appear.
+                    .onAppear { scroll(proxy, to: scrollTarget) }
                 }
                 .ignoresSafeArea(edges: showControls ? [] : .all)
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } }
@@ -94,6 +93,14 @@ struct ReaderView: View {
         .statusBarHidden(!showControls)
         .preferredColorScheme(.dark)
         .task { await start(at: context.startChapterId, page: context.startPage) }
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy, to target: String?) {
+        guard let target else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            proxy.scrollTo(target, anchor: .top)
+            scrollTarget = nil
+        }
     }
 
     // MARK: - Rows

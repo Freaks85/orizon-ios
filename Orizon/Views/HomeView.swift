@@ -344,21 +344,66 @@ struct HeroPage: View {
 }
 
 /// "Historique": the mangas being read, most recent first.
+/// Tapping a card goes straight back into the reader, at the saved chapter and page.
 struct HistoryRow: View {
     let items: [ReadingProgress]
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var downloads: DownloadManager
+    @State private var reader: ReaderContext?
+    @State private var opening: String?
+    @State private var error: String?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: 14) {
                 ForEach(items, id: \.manga.slug) { item in
-                    NavigationLink(value: item.manga) {
+                    Button { resume(item) } label: {
                         HistoryCard(item: item)
+                            .overlay {
+                                if opening == item.manga.slug {
+                                    ProgressView().tint(Theme.pink)
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        NavigationLink(value: item.manga) {
+                            Label("Voir la fiche du manga", systemImage: "info.circle")
+                        }
+                    }
                 }
             }
             .padding(.horizontal)
+        }
+        .fullScreenCover(item: $reader) { ReaderView(context: $0) }
+        .alert("Impossible de reprendre la lecture", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(error ?? "")
+        }
+    }
+
+    private func resume(_ item: ReadingProgress) {
+        guard opening == nil else { return }
+        let slug = item.manga.slug
+        // Chapters known locally (library, downloads) open instantly, even offline.
+        var chapters = library.entry(slug)?.chapters ?? []
+        if !chapters.contains(where: { $0.id == item.chapterId }) {
+            chapters = downloads.downloaded.values.filter { $0.manga.slug == slug }.map(\.chapter)
+        }
+        if chapters.contains(where: { $0.id == item.chapterId }) {
+            reader = ReaderContext(manga: item.manga, chapters: chapters, startChapterId: item.chapterId, startPage: item.pageIndex)
+            return
+        }
+        opening = slug
+        Task {
+            defer { opening = nil }
+            do {
+                let fresh = try await AniverseAPI.shared.chapters(slug: slug)
+                reader = ReaderContext(manga: item.manga, chapters: fresh, startChapterId: item.chapterId, startPage: item.pageIndex)
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }
