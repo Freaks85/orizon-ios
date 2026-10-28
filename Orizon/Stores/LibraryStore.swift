@@ -176,6 +176,7 @@ final class LibraryStore: ObservableObject {
     }
 
     func saveProgress(manga: MangaSummary, chapter: Chapter, pageIndex: Int, pageCount: Int) {
+        let chapterChanged = state.progress[manga.slug]?.chapterId != chapter.id
         state.progress[manga.slug] = ReadingProgress(
             manga: manga,
             chapterId: chapter.id,
@@ -187,8 +188,21 @@ final class LibraryStore: ObservableObject {
         if pageCount > 0, pageIndex >= pageCount - 1, !isRead(chapter.id, slug: manga.slug) {
             setRead(true, chapterIds: [chapter.id], slug: manga.slug)
         } else {
-            save(debounced: true)
+            // Page changes are frequent: debounce them. A new chapter is saved right away.
+            save(debounced: !chapterChanged)
         }
+    }
+
+    /// Mangas being read are kept in the library automatically.
+    func addIfNeeded(_ manga: MangaSummary, chapters: [Chapter]) {
+        guard state.entries[manga.slug] == nil else { return }
+        add(manga, chapters: chapters)
+    }
+
+    /// Writes the current state synchronously (used when the app goes to background).
+    func flush() {
+        saveTask?.cancel()
+        Persistence.save(state, to: fileName)
     }
 
     // MARK: - Persistence

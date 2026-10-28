@@ -240,6 +240,7 @@ struct ReaderView: View {
     private func start(at chapterId: String, page: Int) async {
         guard let chapter = context.chapters.first(where: { $0.id == chapterId }) else { return }
         error = nil
+        library.addIfNeeded(context.manga, chapters: context.chapters)
         do {
             let pages = try await loadPages(for: chapter)
             segments = [Segment(chapter: chapter, pages: pages)]
