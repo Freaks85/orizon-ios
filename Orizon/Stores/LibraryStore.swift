@@ -172,6 +172,11 @@ final class LibraryStore: ObservableObject {
         state.progress.values.sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    func clearHistory() {
+        state.progress.removeAll()
+        save()
+    }
+
     func removeProgress(_ slug: String) {
         state.progress[slug] = nil
         save()

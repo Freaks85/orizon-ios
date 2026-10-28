@@ -4,6 +4,8 @@ struct DownloadsView: View {
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var library: LibraryStore
     @State private var reader: ReaderContext?
+    @State private var confirmDeleteAll = false
+    @State private var deletedMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -96,10 +98,31 @@ struct DownloadsView: View {
             .navigationTitle("Téléchargements")
             .toolbar {
                 if !downloads.downloaded.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .topBarLeading) {
                         Text(downloads.totalBytes.fileSize).font(.caption).foregroundStyle(.secondary)
                     }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button {
+                                let count = downloads.deleteRead { library.isRead($0.chapter.id, slug: $0.manga.slug) }
+                                deletedMessage = count == 0 ? "Aucun chapitre lu à supprimer." : "\(count) chapitre(s) lu(s) supprimé(s)."
+                            } label: {
+                                Label("Supprimer les chapitres lus", systemImage: "eye.slash")
+                            }
+                            Button(role: .destructive) { confirmDeleteAll = true } label: {
+                                Label("Tout supprimer", systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                    }
                 }
+            }
+            .confirmationDialog("Supprimer tous les téléchargements ?", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
+                Button("Tout supprimer (\(downloads.totalBytes.fileSize))", role: .destructive) { downloads.deleteEverything() }
+            }
+            .alert(deletedMessage ?? "", isPresented: Binding(get: { deletedMessage != nil }, set: { if !$0 { deletedMessage = nil } })) {
+                Button("OK", role: .cancel) {}
             }
             .fullScreenCover(item: $reader) { ReaderView(context: $0) }
         }

@@ -8,6 +8,8 @@ struct ReaderView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var downloads: DownloadManager
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("autoDeleteReadDownloads") private var autoDeleteRead = false
 
     @State private var segments: [Segment] = []
     @State private var loadingNext = false
@@ -19,12 +21,17 @@ struct ReaderView: View {
     @State private var scrollTarget: String?
     @State private var scrollAnchor: UnitPoint = .top
     @State private var tracker = ScrollTracker()
+    @State private var items: [Item] = []
 
-    /// Remembers what was last saved, so scrolling does not write on every frame.
+    /// Reading position, updated on every scroll frame without touching SwiftUI state.
+    /// It is written to the library only from time to time (see `commitProgress`):
+    /// publishing the library while scrolling re-renders the whole app and stutters.
     final class ScrollTracker {
-        var chapterId: String?
+        var chapter: Chapter?
         var page = -1
-        var bucket = -1
+        var count = 0
+        var offset: Double = 0
+        var dirty = false
     }
 
     struct Segment: Identifiable {
@@ -50,7 +57,8 @@ struct ReaderView: View {
         context.chapters.sorted { $0.numberValue < $1.numberValue }
     }
 
-    private var items: [Item] {
+    /// The flat list of rows, rebuilt only when chapters are added (not on every render).
+    private func rebuildItems() {
         var result: [Item] = []
         for segment in segments {
             for (index, page) in segment.pages.enumerated() {
@@ -58,7 +66,7 @@ struct ReaderView: View {
             }
             result.append(.divider(finished: segment.chapter, next: chapterAfter(segment.chapter)))
         }
-        return result
+        items = result
     }
 
     var body: some View {
@@ -118,6 +126,11 @@ struct ReaderView: View {
         .statusBarHidden(!showControls)
         .preferredColorScheme(.dark)
         .task { await start(at: context.startChapterId, page: context.startPage, offset: context.startOffset) }
+        .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in commitProgress() }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { commitProgress() }
+        }
+        .onDisappear { commitProgress() }
     }
 
     private func scroll(_ proxy: ScrollViewProxy, to target: String?) {
@@ -197,7 +210,11 @@ struct ReaderView: View {
             .background(Theme.background)
             .onAppear {
                 // Reaching the end marker means the chapter was read to the end.
+                commitProgress()
                 library.setRead(true, chapterIds: [finished.id], slug: context.manga.slug)
+                if autoDeleteRead, downloads.isDownloaded(finished.id) {
+                    downloads.delete(finished.id)
+                }
                 if let next, !segments.contains(where: { $0.chapter.id == next.id }) {
                     Task { await appendNext() }
                 }
@@ -433,8 +450,10 @@ struct ReaderView: View {
         do {
             let pages = try await loadPages(for: chapter)
             let index = max(0, min(page, pages.count - 1))
+            commitProgress()
             tracker = ScrollTracker()
             segments = [Segment(chapter: chapter, pages: pages)]
+            rebuildItems()
             current = (chapter.id, index)
             prefetch(pages, from: index)
             scrollAnchor = anchor(for: pages[index], offset: offset)
@@ -454,6 +473,7 @@ struct ReaderView: View {
             let pages = try await loadPages(for: next)
             guard !segments.contains(where: { $0.chapter.id == next.id }) else { return }
             segments.append(Segment(chapter: next, pages: pages))
+            rebuildItems()
             prefetch(pages, from: 0)
         } catch {
             self.error = error.localizedDescription
@@ -467,16 +487,28 @@ struct ReaderView: View {
         let topLine: CGFloat = 1
         guard minY <= topLine, minY + height > topLine else { return }
         let offset = Double(min(max((topLine - minY) / height, 0), 1))
-        let bucket = Int(offset * 25)
 
-        if tracker.chapterId != chapter.id || tracker.page != index {
-            current = (chapter.id, index)
+        let chapterChanged = tracker.chapter?.id != chapter.id
+        if chapterChanged || tracker.page != index {
+            current = (chapter.id, index)   // only state change: the page counter
         }
-        guard tracker.chapterId != chapter.id || tracker.page != index || tracker.bucket != bucket else { return }
-        tracker.chapterId = chapter.id
+        if chapterChanged, tracker.chapter != nil {
+            commitProgress()                // keep the finished chapter's last position
+        }
+        tracker.chapter = chapter
         tracker.page = index
-        tracker.bucket = bucket
-        library.saveProgress(manga: context.manga, chapter: chapter, pageIndex: index, pageCount: count, offset: offset)
+        tracker.count = count
+        tracker.offset = offset
+        tracker.dirty = true
+        if chapterChanged { commitProgress() }
+    }
+
+    /// Writes the buffered reading position to the library.
+    private func commitProgress() {
+        guard tracker.dirty, let chapter = tracker.chapter else { return }
+        tracker.dirty = false
+        library.saveProgress(manga: context.manga, chapter: chapter, pageIndex: tracker.page,
+                             pageCount: tracker.count, offset: tracker.offset)
     }
 
     private func pageAppeared(chapter: Chapter, index: Int, count: Int) {
@@ -489,28 +521,37 @@ struct ReaderView: View {
         }
     }
 
+    /// Downloads the next pages ahead of time and decodes the very next one.
     private func prefetch(_ pages: [Page], from index: Int) {
         guard index < pages.count else { return }
-        for page in pages[index..<min(index + 4, pages.count)] {
-            Task.detached(priority: .utility) { _ = try? await ImagePipeline.shared.image(for: page.url) }
+        let upcoming = Array(pages[index..<min(index + 5, pages.count)])
+        Task.detached(priority: .utility) {
+            if let first = upcoming.first { _ = try? await ImagePipeline.shared.page(for: first.url) }
+            for page in upcoming.dropFirst() { await ImagePipeline.shared.prefetch(page.url) }
         }
     }
 }
 
 /// One page of the reader, sized from the page dimensions when known so the layout does not jump.
+/// Tall pages are drawn as a stack of slices (see `SlicedImage`) for smooth scrolling.
 struct ReaderPage: View {
     let page: Page
 
-    @State private var image: UIImage?
+    @State private var image: SlicedImage?
     @State private var failed = false
     @State private var attempt = 0
 
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+                VStack(spacing: 0) {
+                    ForEach(image.slices.indices, id: \.self) { index in
+                        Image(uiImage: image.slices[index])
+                            .resizable()
+                            .interpolation(.medium)
+                            .aspectRatio(contentMode: .fit)
+                    }
+                }
             } else {
                 Color.black
                     .aspectRatio(page.aspectRatio ?? 0.7, contentMode: .fit)
@@ -532,12 +573,12 @@ struct ReaderPage: View {
         .frame(maxWidth: .infinity)
         .task(id: "\(page.url.absoluteString)#\(attempt)") {
             failed = false
-            if let cached = ImagePipeline.shared.cached(page.url) {
+            if let cached = ImagePipeline.shared.cachedPage(page.url) {
                 image = cached
                 return
             }
             do {
-                image = try await ImagePipeline.shared.image(for: page.url)
+                image = try await ImagePipeline.shared.page(for: page.url)
             } catch {
                 failed = true
             }

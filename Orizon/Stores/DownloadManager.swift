@@ -180,6 +180,39 @@ final class DownloadManager: ObservableObject {
         saveIndex()
     }
 
+    /// Deletes every downloaded chapter.
+    func deleteEverything() {
+        cancelAll()
+        downloaded.removeAll()
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        saveIndex()
+    }
+
+    /// Deletes the downloaded chapters for which `isRead` returns true. Returns how many.
+    @discardableResult
+    func deleteRead(where isRead: (DownloadedChapter) -> Bool) -> Int {
+        let read = downloaded.values.filter(isRead)
+        for item in read { delete(item.id) }
+        return read.count
+    }
+
+    /// Removes leftover folders that are not in the index (interrupted downloads).
+    func removeOrphanFolders() {
+        let fm = FileManager.default
+        guard let slugs = try? fm.contentsOfDirectory(atPath: root.path) else { return }
+        for slug in slugs where !slug.hasPrefix(".") {
+            let mangaDir = root.appendingPathComponent(slug, isDirectory: true)
+            let chapterIds = (try? fm.contentsOfDirectory(atPath: mangaDir.path)) ?? []
+            for chapterId in chapterIds where downloaded[chapterId] == nil && job(for: chapterId) == nil {
+                try? fm.removeItem(at: mangaDir.appendingPathComponent(chapterId, isDirectory: true))
+            }
+            if ((try? fm.contentsOfDirectory(atPath: mangaDir.path)) ?? []).isEmpty {
+                try? fm.removeItem(at: mangaDir)
+            }
+        }
+    }
+
     // MARK: - Queue
 
     private func pump() {
