@@ -23,7 +23,6 @@ final class EpisodeDownloads: ObservableObject {
         var anime: Anime
         var episode: Episode
         var language: AnimeLanguage
-        var progress: Double = 0
         var error: String?
 
         var id: String { EpisodeDownloads.key(anime.id, language, episode.number) }
@@ -37,6 +36,8 @@ final class EpisodeDownloads: ObservableObject {
 
     @Published private(set) var jobs: [Job] = []
     @Published private(set) var downloaded: [String: DownloadedEpisode] = [:]
+    /// Segments done per running episode (published apart, see `DownloadProgress`).
+    let progress = DownloadProgress()
 
     private let maxConcurrentSegments = 6
     private var running: [String: Task<Void, Never>] = [:]
@@ -111,6 +112,7 @@ final class EpisodeDownloads: ObservableObject {
     func cancel(_ id: String) {
         running[id]?.cancel()
         running[id] = nil
+        progress.remove(id)
         jobs.removeAll { $0.id == id }
         try? FileManager.default.removeItem(at: folder(id))
         pump()
@@ -159,10 +161,6 @@ final class EpisodeDownloads: ObservableObject {
         running[next.id] = Task { [weak self] in await self?.download(next) }
     }
 
-    private func setProgress(_ id: String, _ progress: Double) {
-        if let index = jobs.firstIndex(where: { $0.id == id }) { jobs[index].progress = progress }
-    }
-
     private func download(_ job: Job) async {
         let id = job.id
         let dir = folder(id)
@@ -171,6 +169,7 @@ final class EpisodeDownloads: ObservableObject {
         defer {
             UIApplication.shared.endBackgroundTask(background)
             running[id] = nil
+            progress.remove(id)
             pump()
         }
         let session = self.session
@@ -195,7 +194,7 @@ final class EpisodeDownloads: ObservableObject {
                     try Task.checkCancellation()
                     bytes += size
                     done += 1
-                    setProgress(id, Double(done) / Double(total))
+                    progress.set(id, done: done, total: total)
                     if next < total {
                         group.addTask(operation: Self.segmentTask(index: next, playlist: playlist, key: key, folder: dir, session: session))
                         next += 1
@@ -219,7 +218,6 @@ final class EpisodeDownloads: ObservableObject {
             guard !(error is CancellationError), !Task.isCancelled else { return }
             if let index = jobs.firstIndex(where: { $0.id == id }) {
                 jobs[index].error = error.localizedDescription
-                jobs[index].progress = 0
             }
         }
     }

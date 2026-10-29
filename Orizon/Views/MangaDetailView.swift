@@ -235,6 +235,7 @@ struct MangaDetailView: View {
     private var downloadMenu: some View {
         Menu {
             let unread = unreadToDownload
+            let all = allToDownload
             Button {
                 downloads.enqueue(unread, manga: summary)
             } label: {
@@ -251,11 +252,11 @@ struct MangaDetailView: View {
             .disabled(unread.isEmpty)
 
             Button {
-                downloads.enqueue(allToDownload, manga: summary)
+                downloads.enqueue(all, manga: summary)
             } label: {
-                Label("Tout le manga (\(allToDownload.count))", systemImage: "arrow.down.to.line.circle")
+                Label("Tout le manga (\(all.count))", systemImage: "arrow.down.to.line.circle")
             }
-            .disabled(allToDownload.isEmpty)
+            .disabled(all.isEmpty)
 
             if activeJobs > 0 {
                 Divider()
@@ -472,10 +473,12 @@ struct ChapterRow: View {
             case .queued:
                 Image(systemName: "clock").foregroundStyle(.secondary)
             case .running:
-                ProgressView(value: job.progress)
-                    .progressViewStyle(.circular)
-                    .tint(Theme.pink)
-                    .frame(width: 22, height: 22)
+                DownloadProgressReader(progress: downloads.progress, id: chapter.id) { value in
+                    ProgressView(value: value?.fraction ?? 0)
+                        .progressViewStyle(.circular)
+                        .tint(Theme.pink)
+                        .frame(width: 22, height: 22)
+                }
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }

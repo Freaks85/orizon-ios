@@ -159,9 +159,9 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             }
             .onChange(of: cacheLimitMB) { _ in
-                Task.detached(priority: .utility) {
-                    ImagePipeline.shared.trimDisk()
-                    await MainActor.run { refreshSizes() }
+                Task { @MainActor in
+                    await Task.detached(priority: .utility) { ImagePipeline.shared.trimDisk() }.value
+                    refreshSizes()
                 }
             }
             .task { refreshSizes() }
@@ -179,7 +179,10 @@ struct SettingsView: View {
         }
     }
 
+    /// Adding up thousands of cached files takes a while: not on the main thread.
     private func refreshSizes() {
-        cacheSize = ImagePipeline.shared.diskUsage
+        Task { @MainActor in
+            cacheSize = await Task.detached(priority: .utility) { ImagePipeline.shared.diskUsage }.value
+        }
     }
 }

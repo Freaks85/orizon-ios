@@ -35,19 +35,31 @@ final class AnimeStore: ObservableObject {
     static let shared = AnimeStore()
     nonisolated static let watchedThreshold = 0.9
 
-    @Published private var state: AnimeState
+    @Published private var state: AnimeState {
+        didSet { rebuildDerived() }
+    }
     private nonisolated static let fileName = "anime-library.json"
     private var saveTask: Task<Void, Never>?
 
+    // Sorted views of the state, rebuilt once per change rather than on every read from a view body.
+    private(set) var list: [Anime] = []
+    private(set) var history: [WatchProgress] = []
+    /// History entries by "seasonId-language-episode", for the progress bar of each episode row.
+    private var historyByEpisode: [String: WatchProgress] = [:]
+
     init() {
         state = Persistence.load(AnimeState.self, from: Self.fileName) ?? AnimeState()
+        rebuildDerived()
+    }
+
+    private func rebuildDerived() {
+        list = state.list.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        history = state.history.values.sorted { $0.updatedAt > $1.updatedAt }
+        historyByEpisode = Dictionary(state.history.values.map { (Self.key($0.season.id, $0.language, $0.episode), $0) },
+                                      uniquingKeysWith: { first, _ in first })
     }
 
     // MARK: - Ma liste
-
-    var list: [Anime] {
-        state.list.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-    }
 
     func isInList(_ anime: Anime) -> Bool { state.list[anime.seriesKey] != nil }
 
@@ -57,8 +69,6 @@ final class AnimeStore: ObservableObject {
     }
 
     // MARK: - History
-
-    var history: [WatchProgress] { state.history.values.sorted { $0.updatedAt > $1.updatedAt } }
 
     func progress(series: Anime) -> WatchProgress? { state.history[series.seriesKey] }
 
@@ -85,9 +95,9 @@ final class AnimeStore: ObservableObject {
 
     /// Fraction watched of an unfinished episode, for the thin bar under the episode.
     func partial(animeId: String, language: AnimeLanguage, episode: Int, duration: Double?) -> Double? {
-        guard let position = state.positions[Self.key(animeId, language, episode)] else { return nil }
-        if let progress = state.history.values.first(where: { $0.season.id == animeId && $0.episode == episode && $0.language == language }),
-           progress.duration > 0 {
+        let key = Self.key(animeId, language, episode)
+        guard let position = state.positions[key] else { return nil }
+        if let progress = historyByEpisode[key], progress.duration > 0 {
             return progress.position / progress.duration
         }
         return duration.map { position / $0 }

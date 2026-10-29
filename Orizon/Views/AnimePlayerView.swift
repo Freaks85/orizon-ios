@@ -200,6 +200,7 @@ final class PlayerModel: ObservableObject {
     func togglePlay() {
         if player.rate == 0 { player.play() } else { player.pause() }
         isPlaying = player.rate != 0
+        if !isPlaying { saveProgress() }
     }
 
     func seek(to time: Double) {
@@ -221,21 +222,28 @@ final class PlayerModel: ObservableObject {
         EpisodeDownloads.shared.delete(EpisodeDownloads.key(anime.id, language, number))
     }
 
-    private func saveProgress() {
+    /// Writes the position to the store. Not on every tick: each save publishes the store (re-rendering
+    /// the anime screens under the player) and writes the whole file.
+    func saveProgress() {
         guard duration > 0, currentTime > 3 else { return }
         AnimeStore.shared.save(series: series, season: anime, episode: episode, language: language,
                                position: currentTime, duration: duration)
         lastSaved = Date()
     }
 
+    /// Called 4 times a second. A @Published property notifies on every assignment, even of the same
+    /// value: only assign what changed, so the controls redraw only when something moved.
     private func tick(_ time: Double) {
-        isPlaying = player.rate != 0
-        if isPlaying, Date().timeIntervalSince(lastSaved) > 5 { saveProgress() }
-        if let total = player.currentItem?.duration.seconds, total.isFinite { duration = total }
+        let playing = player.rate != 0
+        if isPlaying != playing { isPlaying = playing }
+        if playing, Date().timeIntervalSince(lastSaved) > 30 { saveProgress() }
+        if let total = player.currentItem?.duration.seconds, total.isFinite, total != duration { duration = total }
         guard time.isFinite else { return }
-        if !isScrubbing { currentTime = time }
-        subtitle = cues.first { $0.start <= time && time < $0.end }?.text
-        segment = segments.first { $0.start <= time && time < $0.end - 1 }
+        if !isScrubbing, time != currentTime { currentTime = time }
+        let text = cues.first { $0.start <= time && time < $0.end }?.text
+        if text != subtitle { subtitle = text }
+        let current = segments.first { $0.start <= time && time < $0.end - 1 }
+        if current != segment { segment = current }
         if let segment, segment != autoSkipped, UserDefaults.standard.bool(forKey: SettingsKeys.animeAutoSkip) {
             autoSkipped = segment
             skip(segment)
@@ -247,6 +255,7 @@ final class PlayerModel: ObservableObject {
 struct AnimePlayerView: View {
     @StateObject private var model: PlayerModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showControls = true
     @State private var showEpisodes = false
     @State private var hideTask: Task<Void, Never>?
@@ -315,6 +324,10 @@ struct AnimePlayerView: View {
             model.stop()
             UIApplication.shared.isIdleTimerDisabled = false
             rotate(to: .portrait, lock: AppDelegate.defaultOrientations)
+        }
+        .onChange(of: scenePhase) { phase in
+            // Before the app's own save on .background (progress is only written every 30 s).
+            if phase == .inactive { model.saveProgress() }
         }
         .sheet(isPresented: $showEpisodes) { episodeList }
     }

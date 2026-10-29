@@ -5,7 +5,7 @@ import CryptoKit
 
 /// A decoded reader page cut into horizontal slices. Webtoon strips can be 800 × 15000 px:
 /// handing such a bitmap to the GPU in one piece stalls scrolling, small slices do not.
-final class SlicedImage {
+final class SlicedImage: @unchecked Sendable {
     let slices: [UIImage]
     let size: CGSize
     let cost: Int
@@ -17,19 +17,69 @@ final class SlicedImage {
     }
 }
 
+/// Shares one loading task between everyone asking for the same key, and cancels it once
+/// nobody waits for it any more (e.g. cells scrolled off screen before their image arrived).
+final class TaskCoalescer<Value: Sendable>: @unchecked Sendable {
+    private final class Entry {
+        let task: Task<Value, Error>
+        var waiters = 0
+        init(task: Task<Value, Error>) { self.task = task }
+    }
+
+    private final class Waiter {
+        var released = false
+    }
+
+    private var entries: [String: Entry] = [:]
+    private let lock = NSLock()
+
+    func value(for key: String, priority: TaskPriority, make: @escaping @Sendable () async throws -> Value) async throws -> Value {
+        let waiter = Waiter()
+        let entry: Entry = synchronized {
+            let entry = entries[key] ?? Entry(task: Task.detached(priority: priority, operation: make))
+            entries[key] = entry
+            entry.waiters += 1
+            return entry
+        }
+        return try await withTaskCancellationHandler {
+            defer { release(key, entry, waiter) }
+            return try await entry.task.value
+        } onCancel: {
+            release(key, entry, waiter)
+        }
+    }
+
+    private func release(_ key: String, _ entry: Entry, _ waiter: Waiter) {
+        synchronized {
+            guard !waiter.released else { return }
+            waiter.released = true
+            entry.waiters -= 1
+            guard entry.waiters == 0 else { return }
+            if entries[key] === entry { entries[key] = nil }
+            // No-op once finished: the result is already in the memory cache.
+            entry.task.cancel()
+        }
+    }
+
+    private func synchronized<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 /// Loads images from the network or local files, with memory caches and a bounded disk cache.
 final class ImagePipeline {
     static let shared = ImagePipeline()
 
-    /// Covers, banners, thumbnails (downsampled).
-    private let memory = NSCache<NSURL, UIImage>()
+    /// Covers, banners, thumbnails, decoded at the size they are shown (see `key(for:fitting:mode:)`).
+    private let memory = NSCache<NSString, UIImage>()
     /// Reader pages (full resolution, sliced).
     private let pages = NSCache<NSURL, SlicedImage>()
     private let diskDirectory: URL
     private let session: URLSession
-    private var inFlightImages: [URL: Task<UIImage, Error>] = [:]
-    private var inFlightPages: [URL: Task<SlicedImage, Error>] = [:]
-    private let lock = NSLock()
+    private let inFlightImages = TaskCoalescer<UIImage>()
+    private let inFlightPages = TaskCoalescer<SlicedImage>()
 
     static let cacheLimitKey = "imageCacheLimitMB"
     static let defaultCacheLimitMB = 500
@@ -62,29 +112,33 @@ final class ImagePipeline {
 
     // MARK: - Small images (covers, banners)
 
-    func cached(_ url: URL) -> UIImage? {
-        memory.object(forKey: url as NSURL)
+    /// Cache key of `url` shown in a `size` (points) box. Sizes are rounded up to 64 px steps,
+    /// so a view that moves by a few points keeps hitting the same entry.
+    static func key(for url: URL, fitting size: CGSize, mode: ContentMode, scale: CGFloat) -> String {
+        func bucket(_ value: CGFloat) -> Int { Int((value * scale / 64).rounded(.up)) * 64 }
+        return "\(url.absoluteString)#\(bucket(size.width))x\(bucket(size.height))\(mode == .fill ? "f" : "s")"
     }
 
-    func image(for url: URL, maxPixelSize: CGFloat = 1000) async throws -> UIImage {
-        if let image = cached(url) { return image }
+    func cached(_ url: URL, fitting size: CGSize, mode: ContentMode, scale: CGFloat) -> UIImage? {
+        memory.object(forKey: Self.key(for: url, fitting: size, mode: mode, scale: scale) as NSString)
+    }
 
-        let task: Task<UIImage, Error> = synchronized {
-            if let existing = inFlightImages[url] { return existing }
-            let created = Task.detached(priority: .userInitiated) { [self] () async throws -> UIImage in
-                let data = try await self.data(for: url)
-                guard let image = Self.downsample(data, maxPixelSize: maxPixelSize) else {
-                    throw APIError.parsing("l'image")
-                }
-                let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
-                self.memory.setObject(image, forKey: url as NSURL, cost: cost)
-                return image
+    /// Decodes `url` at the pixel size needed to show it in `size` points: a 30 pt thumbnail
+    /// costs a few KB of memory instead of the megabytes of a full cover.
+    func image(for url: URL, fitting size: CGSize, mode: ContentMode, scale: CGFloat) async throws -> UIImage {
+        let key = Self.key(for: url, fitting: size, mode: mode, scale: scale)
+        if let image = memory.object(forKey: key as NSString) { return image }
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        return try await inFlightImages.value(for: key, priority: .userInitiated) { [self] in
+            let data = try await self.data(for: url)
+            try Task.checkCancellation()
+            guard let image = Self.downsample(data, fitting: target, fill: mode == .fill) else {
+                throw APIError.parsing("l'image")
             }
-            inFlightImages[url] = created
-            return created
+            let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+            self.memory.setObject(image, forKey: key as NSString, cost: cost)
+            return image
         }
-        defer { synchronized { inFlightImages[url] = nil } }
-        return try await task.value
     }
 
     // MARK: - Reader pages
@@ -95,20 +149,13 @@ final class ImagePipeline {
 
     func page(for url: URL) async throws -> SlicedImage {
         if let page = cachedPage(url) { return page }
-
-        let task: Task<SlicedImage, Error> = synchronized {
-            if let existing = inFlightPages[url] { return existing }
-            let created = Task.detached(priority: .userInitiated) { [self] () async throws -> SlicedImage in
-                let data = try await self.data(for: url)
-                guard let page = Self.decodeSliced(data) else { throw APIError.parsing("la page") }
-                self.pages.setObject(page, forKey: url as NSURL, cost: page.cost)
-                return page
-            }
-            inFlightPages[url] = created
-            return created
+        return try await inFlightPages.value(for: url.absoluteString, priority: .userInitiated) { [self] in
+            let data = try await self.data(for: url)
+            try Task.checkCancellation()
+            guard let page = Self.decodeSliced(data) else { throw APIError.parsing("la page") }
+            self.pages.setObject(page, forKey: url as NSURL, cost: page.cost)
+            return page
         }
-        defer { synchronized { inFlightPages[url] = nil } }
-        return try await task.value
     }
 
     /// Downloads (or reads from disk) without decoding: used to prefetch upcoming pages.
@@ -118,9 +165,27 @@ final class ImagePipeline {
 
     // MARK: - Decoding
 
-    private static func downsample(_ data: Data, maxPixelSize: CGFloat) -> UIImage? {
+    /// The longest side, in pixels, at which the image covers (`fill`) or fits in `target`.
+    /// Read from the header only, before decoding anything; never more than the original size.
+    private static func pixelSize(of source: CGImageSource, fitting target: CGSize, fill: Bool) -> CGFloat {
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        guard let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber).map({ CGFloat($0.doubleValue) }),
+              let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber).map({ CGFloat($0.doubleValue) }),
+              width > 0, height > 0, target.width > 0, target.height > 0 else {
+            return max(target.width, target.height, 1000)
+        }
+        // A rotated (EXIF) image swaps its sides once displayed.
+        let orientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let (w, h) = orientation >= 5 ? (height, width) : (width, height)
+        let ratios = (target.width / w, target.height / h)
+        let ratio = min(fill ? max(ratios.0, ratios.1) : min(ratios.0, ratios.1), 1)
+        return max(w, h) * ratio
+    }
+
+    private static func downsample(_ data: Data, fitting target: CGSize, fill: Bool) -> UIImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+        let maxPixelSize = pixelSize(of: source, fitting: target, fill: fill).rounded(.up)
         let options = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
@@ -157,12 +222,6 @@ final class ImagePipeline {
     }
 
     // MARK: - Disk cache
-
-    private func synchronized<T>(_ body: () -> T) -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return body()
-    }
 
     private func data(for url: URL) async throws -> Data {
         if url.isFileURL {
@@ -226,44 +285,51 @@ final class ImagePipeline {
     }
 }
 
-/// An image view backed by `ImagePipeline`.
+/// An image view backed by `ImagePipeline`. It fills the space it is offered (use it in an
+/// `.overlay` or a framed container) and decodes the image at that size.
 struct RemoteImage: View {
     let url: URL?
     var contentMode: ContentMode = .fill
-    var maxPixelSize: CGFloat = 1000
 
-    @State private var image: UIImage?
+    @Environment(\.displayScale) private var displayScale
+    @State private var loaded: (url: URL, image: UIImage)?
     @State private var failed = false
 
     var body: some View {
-        ZStack {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
-            } else {
-                Rectangle()
-                    .fill(Color.white.opacity(0.06))
-                    .overlay {
-                        if failed {
-                            Image(systemName: "photo")
-                                .foregroundStyle(.secondary)
+        GeometryReader { geo in
+            let size = geo.size
+            // Straight from the memory cache on the first frame (no placeholder flash when
+            // scrolling back); a previous size of the same image while the new one decodes.
+            let image = url.flatMap { ImagePipeline.shared.cached($0, fitting: size, mode: contentMode, scale: displayScale) }
+                ?? (loaded?.url == url ? loaded?.image : nil)
+            ZStack {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                        .frame(width: size.width, height: size.height)
+                } else {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.06))
+                        .overlay {
+                            if failed {
+                                Image(systemName: "photo")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                    }
+                }
             }
-        }
-        .task(id: url) {
-            failed = false
-            guard let url else { return }
-            if let cached = ImagePipeline.shared.cached(url) {
-                image = cached
-                return
-            }
-            image = nil
-            do {
-                image = try await ImagePipeline.shared.image(for: url, maxPixelSize: maxPixelSize)
-            } catch {
-                failed = true
+            .frame(width: size.width, height: size.height)
+            .task(id: url.map { ImagePipeline.key(for: $0, fitting: size, mode: contentMode, scale: displayScale) }) {
+                failed = false
+                guard let url, size.width > 0, size.height > 0 else { return }
+                do {
+                    let image = try await ImagePipeline.shared.image(for: url, fitting: size, mode: contentMode, scale: displayScale)
+                    loaded = (url, image)
+                } catch is CancellationError {
+                } catch {
+                    if !Task.isCancelled { failed = true }
+                }
             }
         }
     }

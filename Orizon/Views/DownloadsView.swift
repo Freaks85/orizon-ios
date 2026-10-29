@@ -16,7 +16,7 @@ struct DownloadsView: View {
                 if mode == .manga && !downloads.jobs.isEmpty {
                     Section {
                         ForEach(downloads.jobs) { job in
-                            JobRow(job: job)
+                            JobRow(job: job, progress: downloads.progress)
                                 .swipeActions {
                                     Button(role: .destructive) { downloads.cancel(job.id) } label: {
                                         Label("Annuler", systemImage: "xmark")
@@ -41,7 +41,7 @@ struct DownloadsView: View {
                 if mode == .anime && !episodes.jobs.isEmpty {
                     Section {
                         ForEach(episodes.jobs) { job in
-                            EpisodeJobRow(job: job)
+                            EpisodeJobRow(job: job, progress: episodes.progress)
                                 .swipeActions {
                                     Button(role: .destructive) { episodes.cancel(job.id) } label: {
                                         Label("Annuler", systemImage: "xmark")
@@ -216,6 +216,7 @@ struct DownloadsView: View {
 
 struct JobRow: View {
     let job: DownloadJob
+    @ObservedObject var progress: DownloadProgress
 
     var body: some View {
         HStack(spacing: 12) {
@@ -226,10 +227,11 @@ struct JobRow: View {
                 switch job.state {
                 case .queued:
                     Text("En attente").font(.caption2).foregroundStyle(.tertiary)
-                case .running(let done, let total):
-                    ProgressView(value: job.progress)
+                case .running:
+                    let value = progress.values[job.id]
+                    ProgressView(value: value?.fraction ?? 0)
                         .tint(Theme.pink)
-                    Text(total > 0 ? "\(done) / \(total) pages" : "Préparation…")
+                    Text(value.map { $0.total > 0 ? "\($0.done) / \($0.total) pages" : "Préparation…" } ?? "Préparation…")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 case .failed(let message):
@@ -242,6 +244,7 @@ struct JobRow: View {
 
 struct EpisodeJobRow: View {
     let job: EpisodeDownloads.Job
+    @ObservedObject var progress: DownloadProgress
 
     var body: some View {
         HStack(spacing: 12) {
@@ -251,9 +254,9 @@ struct EpisodeJobRow: View {
                 Text("Épisode \(job.episode.number) · \(job.language.label)").font(.caption).foregroundStyle(.secondary)
                 if let error = job.error {
                     Text(error).font(.caption2).foregroundStyle(.orange).lineLimit(2)
-                } else if job.progress > 0 {
-                    ProgressView(value: job.progress).tint(Theme.pink)
-                    Text("\(Int(job.progress * 100)) %").font(.caption2).foregroundStyle(.tertiary)
+                } else if let fraction = progress.values[job.id]?.fraction, fraction > 0 {
+                    ProgressView(value: fraction).tint(Theme.pink)
+                    Text("\(Int(fraction * 100)) %").font(.caption2).foregroundStyle(.tertiary)
                 } else {
                     Text("En attente").font(.caption2).foregroundStyle(.tertiary)
                 }

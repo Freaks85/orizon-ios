@@ -301,6 +301,8 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
     @Published private(set) var hasMore = true
 
     private var page = 1
+    /// Position of each item by key: cells ask on appear whether they are near the end.
+    private var positions: [AnyHashable: Int] = [:]
     private var fetch: (Int) async throws -> PagedResult<Item>
     private var generation = 0
     /// Items sharing a key are shown once (the first one loaded wins).
@@ -315,6 +317,7 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
         self.fetch = fetch
         generation += 1
         items = []
+        positions = [:]
         page = 1
         hasMore = true
         error = nil
@@ -324,7 +327,7 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
     func loadMoreIfNeeded(current: Item?) async {
         guard let current else { await loadMore(); return }
         let threshold = items.index(items.endIndex, offsetBy: -8, limitedBy: items.startIndex) ?? items.startIndex
-        if let index = items.firstIndex(of: current), index >= threshold {
+        if let index = positions[key(current)], index >= threshold {
             await loadMore()
         }
     }
@@ -337,8 +340,12 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
         do {
             let result = try await fetch(page)
             guard currentGeneration == generation else { return }
-            var known = Set(items.map(key))
-            items += result.items.filter { known.insert(key($0)).inserted }
+            var added: [Item] = []
+            for item in result.items where positions[key(item)] == nil {
+                positions[key(item)] = items.count + added.count
+                added.append(item)
+            }
+            items += added   // a single change for the whole page
             hasMore = result.hasNextPage && !result.items.isEmpty
             page += 1
         } catch {

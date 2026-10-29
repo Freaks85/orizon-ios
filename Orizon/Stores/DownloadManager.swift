@@ -14,7 +14,8 @@ struct DownloadedChapter: Codable, Hashable, Identifiable {
 struct DownloadJob: Identifiable, Hashable {
     enum State: Hashable {
         case queued
-        case running(done: Int, total: Int)
+        /// Its page count is in `DownloadManager.progress`.
+        case running
         case failed(String)
     }
 
@@ -23,11 +24,6 @@ struct DownloadJob: Identifiable, Hashable {
     var state: State
 
     var id: String { chapter.id }
-
-    var progress: Double {
-        if case .running(let done, let total) = state, total > 0 { return Double(done) / Double(total) }
-        return 0
-    }
 }
 
 /// Chapter downloads: a queue processed a few chapters at a time, each chapter fetching
@@ -36,6 +32,8 @@ struct DownloadJob: Identifiable, Hashable {
 final class DownloadManager: ObservableObject {
     @Published private(set) var jobs: [DownloadJob] = []
     @Published private(set) var downloaded: [String: DownloadedChapter] = [:]
+    /// Pages done per running chapter (published apart, see `DownloadProgress`).
+    let progress = DownloadProgress()
 
     private let maxConcurrentChapters = 2
     private let maxConcurrentPages = 6
@@ -46,6 +44,11 @@ final class DownloadManager: ObservableObject {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Downloads", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Downloads can be fetched again: keep them out of iCloud backups.
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var url = dir
+        try? url.setResourceValues(values)
         return dir
     }()
 
@@ -66,13 +69,22 @@ final class DownloadManager: ObservableObject {
     /// (e.g. after the index could not be read), using the site to name them again.
     func recoverOrphans() async {
         let fm = FileManager.default
-        guard let slugs = try? fm.contentsOfDirectory(atPath: root.path) else { return }
-        for slug in slugs where !slug.hasPrefix(".") {
+        // Listing every chapter folder is disk work: done off the main thread at launch.
+        let root = self.root
+        let folders: [(String, [String])] = await Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            let slugs = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
+            return slugs.filter { !$0.hasPrefix(".") }.map { slug in
+                (slug, (try? fm.contentsOfDirectory(atPath: root.appendingPathComponent(slug, isDirectory: true).path)) ?? [])
+            }
+        }.value
+        var recovered = false
+        for (slug, chapterIds) in folders {
             let mangaDir = root.appendingPathComponent(slug, isDirectory: true)
-            guard let chapterIds = try? fm.contentsOfDirectory(atPath: mangaDir.path) else { continue }
             let orphans = chapterIds.filter { !$0.hasPrefix(".") && downloaded[$0] == nil && job(for: $0) == nil }
             guard !orphans.isEmpty,
                   let result = try? await AniverseAPI.shared.manga(slug: slug) else { continue }
+            recovered = true
             let (details, chapters) = result
             for chapterId in orphans {
                 guard let chapter = chapters.first(where: { $0.id == chapterId }) else { continue }
@@ -95,7 +107,7 @@ final class DownloadManager: ObservableObject {
                 )
             }
         }
-        saveIndex()
+        if recovered { saveIndex() }
     }
 
     // MARK: - Queries
@@ -148,12 +160,14 @@ final class DownloadManager: ObservableObject {
     func cancel(_ chapterId: String) {
         running[chapterId]?.cancel()
         running[chapterId] = nil
+        progress.remove(chapterId)
         jobs.removeAll { $0.id == chapterId }
         pump()
     }
 
     func cancelAll() {
         for task in running.values { task.cancel() }
+        for id in running.keys { progress.remove(id) }
         running.removeAll()
         jobs.removeAll()
     }
@@ -219,7 +233,8 @@ final class DownloadManager: ObservableObject {
         while running.count < maxConcurrentChapters,
               let next = jobs.first(where: { $0.state == .queued && running[$0.id] == nil }) {
             let id = next.id
-            update(id, .running(done: 0, total: 0))
+            update(id, .running)
+            progress.set(id, done: 0, total: 0)
             running[id] = Task { [weak self] in
                 await self?.download(next)
             }
@@ -236,13 +251,14 @@ final class DownloadManager: ObservableObject {
         let id = job.id
         defer {
             running[id] = nil
+            progress.remove(id)
             pump()
         }
         do {
             let pages = try await AniverseAPI.shared.pages(slug: job.manga.slug, chapterId: id)
             let folder = chapterFolder(slug: job.manga.slug, chapterId: id)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            update(id, .running(done: 0, total: pages.count))
+            progress.set(id, done: 0, total: pages.count)
 
             var files = Array(repeating: "", count: pages.count)
             var bytes: Int64 = 0
@@ -260,7 +276,7 @@ final class DownloadManager: ObservableObject {
                     files[index] = name
                     bytes += size
                     done += 1
-                    update(id, .running(done: done, total: pages.count))
+                    progress.set(id, done: done, total: pages.count)
                     if nextIndex < pages.count {
                         group.addTask(operation: Self.pageTask(index: nextIndex, page: pages[nextIndex], folder: folder, session: session))
                         nextIndex += 1

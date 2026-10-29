@@ -1,14 +1,43 @@
 import SwiftUI
 
 struct ReaderContext: Identifiable {
-    var manga: MangaSummary
+    let manga: MangaSummary
     /// Chapters sorted newest first, as shown in the details screen.
-    var chapters: [Chapter]
-    var startChapterId: String
-    var startPage: Int = 0
-    var startOffset: Double = 0
+    let chapters: [Chapter]
+    let startChapterId: String
+    let startPage: Int
+    let startOffset: Double
+    /// Chapters oldest first, and each one's position in it: computed once when the reader opens,
+    /// the reader looks up the previous/next chapter on every page change.
+    let readingOrder: [Chapter]
+    private let positions: [String: Int]
 
     var id: String { startChapterId }
+
+    init(manga: MangaSummary, chapters: [Chapter], startChapterId: String, startPage: Int = 0, startOffset: Double = 0) {
+        self.manga = manga
+        self.chapters = chapters
+        self.startChapterId = startChapterId
+        self.startPage = startPage
+        self.startOffset = startOffset
+        // numberValue parses a string: parse each number once, not once per comparison.
+        readingOrder = chapters.map { ($0, $0.numberValue) }.sorted { $0.1 < $1.1 }.map { $0.0 }
+        positions = Dictionary(readingOrder.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    func chapter(_ id: String) -> Chapter? {
+        positions[id].map { readingOrder[$0] }
+    }
+
+    func chapter(after chapter: Chapter) -> Chapter? {
+        guard let index = positions[chapter.id], index + 1 < readingOrder.count else { return nil }
+        return readingOrder[index + 1]
+    }
+
+    func chapter(before chapter: Chapter) -> Chapter? {
+        guard let index = positions[chapter.id], index > 0 else { return nil }
+        return readingOrder[index - 1]
+    }
 }
 
 @MainActor

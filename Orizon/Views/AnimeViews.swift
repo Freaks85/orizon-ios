@@ -647,16 +647,19 @@ struct EpisodeDownloadButton: View {
                     .accessibilityLabel("Réessayer le téléchargement")
                 } else {
                     Button { downloads.cancel(id) } label: {
-                        ZStack {
-                            Circle().stroke(Color.white.opacity(0.15), lineWidth: 3)
-                            Circle()
-                                .trim(from: 0, to: max(job.progress, 0.02))
-                                .stroke(Theme.pink, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                                .rotationEffect(.degrees(-90))
-                                .animation(.linear(duration: 0.2), value: job.progress)
-                            Image(systemName: "stop.fill").font(.system(size: 9))
+                        DownloadProgressReader(progress: downloads.progress, id: id) { value in
+                            let fraction = value?.fraction ?? 0
+                            ZStack {
+                                Circle().stroke(Color.white.opacity(0.15), lineWidth: 3)
+                                Circle()
+                                    .trim(from: 0, to: max(fraction, 0.02))
+                                    .stroke(Theme.pink, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                                    .rotationEffect(.degrees(-90))
+                                    .animation(.linear(duration: 0.2), value: fraction)
+                                Image(systemName: "stop.fill").font(.system(size: 9))
+                            }
+                            .frame(width: 26, height: 26)
                         }
-                        .frame(width: 26, height: 26)
                     }
                     .accessibilityLabel("Arrêter le téléchargement")
                 }

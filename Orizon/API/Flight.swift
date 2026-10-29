@@ -10,39 +10,65 @@ struct Flight {
     let bytes: [UInt8]
 
     init(html: String) {
-        let assembled = Flight.assemble(html)
-        bytes = Array((assembled.isEmpty ? html : assembled).utf8)
+        self.init(data: Data(html.utf8))
     }
 
-    private static func assemble(_ html: String) -> String {
-        let marker = "self.__next_f.push([1,\""
-        var result = ""
-        var searchRange = html.startIndex..<html.endIndex
-        while let found = html.range(of: marker, range: searchRange) {
-            // The JS string literal starts at the opening quote (last char of the marker).
-            let literalStart = html.index(before: found.upperBound)
-            var i = found.upperBound
+    init(data: Data) {
+        let source = [UInt8](data)
+        let assembled = Flight.assemble(source)
+        bytes = assembled.isEmpty ? source : assembled
+    }
+
+    /// Works on the raw UTF-8 bytes: walking a page of several hundred KB as Swift `Character`s
+    /// (grapheme clusters) is many times slower. Quotes and backslashes are ASCII, so they can
+    /// never appear inside a multi-byte character.
+    private static func assemble(_ html: [UInt8]) -> [UInt8] {
+        let marker = Array("self.__next_f.push([1,\"".utf8)
+        let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\")
+        var result: [UInt8] = []
+        var from = 0
+        while let found = firstOffset(of: marker, in: html, from: from) {
+            // The JS string literal starts at the opening quote (last byte of the marker).
+            let literalStart = found + marker.count - 1
+            var i = found + marker.count
             var escaped = false
-            while i < html.endIndex {
+            while i < html.count {
                 let c = html[i]
                 if escaped {
                     escaped = false
-                } else if c == "\\" {
+                } else if c == backslash {
                     escaped = true
-                } else if c == "\"" {
+                } else if c == quote {
                     break
                 }
-                i = html.index(after: i)
+                i += 1
             }
-            guard i < html.endIndex else { break }
-            let literal = String(html[literalStart...i])
-            if let data = literal.data(using: .utf8),
-               let decoded = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String {
-                result += decoded
+            guard i < html.count else { break }
+            if let decoded = try? JSONSerialization.jsonObject(with: Data(html[literalStart...i]), options: .fragmentsAllowed) as? String {
+                result.append(contentsOf: decoded.utf8)
             }
-            searchRange = html.index(after: i)..<html.endIndex
+            from = i + 1
         }
         return result
+    }
+
+    private static func firstOffset(of needle: [UInt8], in haystack: [UInt8], from start: Int) -> Int? {
+        guard !needle.isEmpty, haystack.count >= needle.count, start <= haystack.count - needle.count else { return nil }
+        let first = needle[0]
+        var i = start
+        let last = haystack.count - needle.count
+        while i <= last {
+            if haystack[i] == first {
+                var match = true
+                for j in 1..<needle.count where haystack[i + j] != needle[j] {
+                    match = false
+                    break
+                }
+                if match { return i }
+            }
+            i += 1
+        }
+        return nil
     }
 
     // MARK: - JSON extraction

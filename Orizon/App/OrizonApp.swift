@@ -30,10 +30,12 @@ struct OrizonApp: App {
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:
-                Task { await library.checkForUpdates() }
+                Task { await library.checkForUpdates(minimumInterval: 30 * 60) }
             case .background:
                 library.flush()
                 AnimeStore.shared.flush()
+                // The cache may have grown past its limit during the session.
+                Task.detached(priority: .background) { ImagePipeline.shared.trimDisk() }
             default:
                 break
             }

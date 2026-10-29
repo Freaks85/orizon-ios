@@ -57,11 +57,6 @@ struct ReaderView: View {
         }
     }
 
-    /// Chapters in reading order (oldest first).
-    private var ordered: [Chapter] {
-        context.chapters.sorted { $0.numberValue < $1.numberValue }
-    }
-
     /// The flat list of rows, rebuilt only when chapters are added (not on every render).
     private func rebuildItems() {
         var result: [Item] = []
@@ -257,8 +252,7 @@ struct ReaderView: View {
     // MARK: - Controls
 
     private var currentChapter: Chapter? {
-        guard let id = current?.chapterId else { return context.chapters.first { $0.id == context.startChapterId } }
-        return context.chapters.first { $0.id == id }
+        context.chapter(current?.chapterId ?? context.startChapterId)
     }
 
     private var controls: some View {
@@ -458,17 +452,9 @@ struct ReaderView: View {
 
     // MARK: - Navigation between chapters
 
-    private func chapterAfter(_ chapter: Chapter) -> Chapter? {
-        let list = ordered
-        guard let index = list.firstIndex(where: { $0.id == chapter.id }), index + 1 < list.count else { return nil }
-        return list[index + 1]
-    }
+    private func chapterAfter(_ chapter: Chapter) -> Chapter? { context.chapter(after: chapter) }
 
-    private func chapterBefore(_ chapter: Chapter) -> Chapter? {
-        let list = ordered
-        guard let index = list.firstIndex(where: { $0.id == chapter.id }), index > 0 else { return nil }
-        return list[index - 1]
-    }
+    private func chapterBefore(_ chapter: Chapter) -> Chapter? { context.chapter(before: chapter) }
 
     private func loadPages(for chapter: Chapter) async throws -> [Page] {
         if let local = downloads.localPages(for: chapter.id) { return local }
@@ -476,7 +462,7 @@ struct ReaderView: View {
     }
 
     private func start(at chapterId: String, page: Int, offset: Double) async {
-        guard let chapter = context.chapters.first(where: { $0.id == chapterId }) else { return }
+        guard let chapter = context.chapter(chapterId) else { return }
         error = nil
         library.addIfNeeded(context.manga, chapters: context.chapters)
         do {

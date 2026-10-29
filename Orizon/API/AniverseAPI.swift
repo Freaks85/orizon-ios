@@ -66,8 +66,7 @@ final class AniverseAPI {
     }
 
     private func getFlight(_ path: String) async throws -> Flight {
-        let data = try await get(path)
-        return Flight(html: String(decoding: data, as: UTF8.self))
+        Flight(data: try await get(path))
     }
 
     // MARK: - Lists
@@ -263,15 +262,45 @@ extension AniverseAPI {
     }
 
     /// Search results list each season separately: tag them with their series so lists show one card per show.
+    /// The search does not return it: one request per anime, so the answers are kept (they never change)
+    /// and the missing ones are asked a few at a time.
     private func withSeries(_ animes: [Anime]) async -> [Anime] {
-        await withTaskGroup(of: (Int, String?).self) { group in
-            for (index, anime) in animes.enumerated() {
-                group.addTask { (index, (try? await self.seriesId(animeId: anime.id)) ?? nil) }
+        var result = animes
+        var missing: [Int] = []
+        for (index, anime) in animes.enumerated() {
+            if let known = await SeriesIdCache.shared.lookup(anime.id) {
+                result[index].seriesId = known
+            } else {
+                missing.append(index)
             }
-            var result = animes
-            for await (index, seriesId) in group { result[index].seriesId = seriesId }
-            return result
         }
+        guard !missing.isEmpty else { return result }
+
+        var found: [String: String?] = [:]
+        // Answer nil: the request failed (asked again next time); .some(nil): a standalone anime.
+        let fetch: @Sendable (Int, String) async -> (Int, String??) = { index, id in
+            do { return (index, .some(try await self.seriesId(animeId: id))) } catch { return (index, nil) }
+        }
+        await withTaskGroup(of: (Int, String??).self) { group in
+            var iterator = missing.makeIterator()
+            for _ in 0..<6 {
+                guard let index = iterator.next() else { break }
+                let id = animes[index].id
+                group.addTask { await fetch(index, id) }
+            }
+            while let (index, answer) = await group.next() {
+                if let seriesId = answer {
+                    result[index].seriesId = seriesId
+                    found.updateValue(seriesId, forKey: animes[index].id)
+                }
+                if let next = iterator.next() {
+                    let id = animes[next].id
+                    group.addTask { await fetch(next, id) }
+                }
+            }
+        }
+        await SeriesIdCache.shared.store(found)
+        return result
     }
 
     private func seriesId(animeId: String) async throws -> String? {
@@ -398,5 +427,36 @@ extension AniverseAPI {
     func subtitles(_ url: URL) async throws -> [SubtitleCue] {
         let (data, _) = try await session.data(from: url)
         return SubtitleCue.parse(String(decoding: data, as: UTF8.self))
+    }
+}
+
+/// animeId → seriesId answers, kept on disk across launches.
+actor SeriesIdCache {
+    static let shared = SeriesIdCache()
+    private static let fileName = "series-ids.json"
+
+    /// "" stands for "no series" (JSON has no optional values in a dictionary).
+    private var ids: [String: String]?
+
+    /// `.some(nil)` for an anime known to have no series, `nil` when unknown.
+    func lookup(_ animeId: String) -> String?? {
+        let all = loaded()
+        guard let value = all[animeId] else { return nil }
+        return .some(value.isEmpty ? nil : value)
+    }
+
+    func store(_ found: [String: String?]) {
+        guard !found.isEmpty else { return }
+        var all = loaded()
+        for (animeId, seriesId) in found { all[animeId] = seriesId ?? "" }
+        ids = all
+        Persistence.save(all, to: Self.fileName)
+    }
+
+    private func loaded() -> [String: String] {
+        if let ids { return ids }
+        let read = Persistence.load([String: String].self, from: Self.fileName) ?? [:]
+        ids = read
+        return read
     }
 }

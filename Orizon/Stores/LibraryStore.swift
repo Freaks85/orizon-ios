@@ -36,25 +36,42 @@ private struct LibraryState: Codable {
 /// Library, reading progress, read chapters and new-chapter tracking.
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published private var state: LibraryState
+    @Published private var state: LibraryState {
+        didSet { rebuildDerived() }
+    }
     @Published private(set) var isCheckingUpdates = false
     @Published private(set) var lastUpdateError: String?
 
     private let fileName = "library.json"
     private var saveTask: Task<Void, Never>?
 
+    // Sorted views of the state, rebuilt once per change rather than on every read from a view body.
+    private(set) var entries: [LibraryEntry] = []
+    private(set) var continueReading: [ReadingProgress] = []
+    private(set) var newChapters: [NewChapterItem] = []
+    private(set) var newChapterCount = 0
+
     init() {
         state = Persistence.load(LibraryState.self, from: "library.json") ?? LibraryState()
+        rebuildDerived()
     }
 
-    // MARK: - Library
-
-    var entries: [LibraryEntry] {
-        state.entries.values.sorted { lhs, rhs in
+    private func rebuildDerived() {
+        entries = state.entries.values.sorted { lhs, rhs in
             if lhs.newChapterIds.isEmpty != rhs.newChapterIds.isEmpty { return !lhs.newChapterIds.isEmpty }
             return lhs.manga.title.localizedCaseInsensitiveCompare(rhs.manga.title) == .orderedAscending
         }
+        continueReading = state.progress.values.sorted { $0.updatedAt > $1.updatedAt }
+        newChapters = state.entries.values.flatMap { entry in
+            let ids = Set(entry.newChapterIds)
+            return entry.chapters.filter { ids.contains($0.id) }
+                .map { NewChapterItem(manga: entry.manga, chapter: $0) }
+        }
+        .sorted { ($0.chapter.date ?? .distantPast) > ($1.chapter.date ?? .distantPast) }
+        newChapterCount = state.entries.values.reduce(0) { $0 + $1.newChapterIds.count }
     }
+
+    // MARK: - Library
 
     func contains(_ slug: String) -> Bool { state.entries[slug] != nil }
 
@@ -77,6 +94,15 @@ final class LibraryStore: ObservableObject {
     /// Called whenever fresh chapters are loaded for a manga (details screen or update check).
     @discardableResult
     func merge(chapters: [Chapter], for manga: MangaSummary) -> Int {
+        let fresh = Self.merge(chapters: chapters, for: manga, into: &state)
+        save()
+        return fresh
+    }
+
+    /// Applies fresh chapters to a copy of the state, so several mangas can be merged with a single
+    /// change (one re-render and one save instead of one per manga).
+    @discardableResult
+    private static func merge(chapters: [Chapter], for manga: MangaSummary, into state: inout LibraryState) -> Int {
         guard var entry = state.entries[manga.slug] else { return 0 }
         let known = Set(entry.chapters.map(\.id))
         let read = state.readChapters[manga.slug] ?? []
@@ -86,26 +112,14 @@ final class LibraryStore: ObservableObject {
         if manga.cover != nil { entry.manga.cover = manga.cover }
         if manga.status != nil { entry.manga.status = manga.status }
         if manga.kind != nil { entry.manga.kind = manga.kind }
-        entry.newChapterIds = Array(Set(entry.newChapterIds + fresh)).filter { id in chapters.contains { $0.id == id } }
+        let current = Set(chapters.map(\.id))
+        entry.newChapterIds = Array(Set(entry.newChapterIds + fresh)).filter { current.contains($0) }
         entry.lastChecked = Date()
         state.entries[manga.slug] = entry
-        save()
         return fresh.count
     }
 
     // MARK: - New chapters
-
-    var newChapterCount: Int {
-        state.entries.values.reduce(0) { $0 + $1.newChapterIds.count }
-    }
-
-    var newChapters: [NewChapterItem] {
-        state.entries.values.flatMap { entry in
-            entry.chapters.filter { entry.newChapterIds.contains($0.id) }
-                .map { NewChapterItem(manga: entry.manga, chapter: $0) }
-        }
-        .sorted { ($0.chapter.date ?? .distantPast) > ($1.chapter.date ?? .distantPast) }
-    }
 
     func isNew(_ chapterId: String, slug: String) -> Bool {
         state.entries[slug]?.newChapterIds.contains(chapterId) ?? false
@@ -121,13 +135,21 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
-    func checkForUpdates() async {
+    /// Fetches the chapter list of every followed manga. `minimumInterval` skips the mangas checked
+    /// more recently than that (used when the app comes back to the foreground: each check
+    /// downloads a whole manga page).
+    func checkForUpdates(minimumInterval: TimeInterval = 0) async {
         guard !isCheckingUpdates else { return }
+        let now = Date()
+        let mangas = state.entries.values
+            .filter { now.timeIntervalSince($0.lastChecked ?? .distantPast) >= minimumInterval }
+            .map(\.manga)
+        guard !mangas.isEmpty else { return }
         isCheckingUpdates = true
         lastUpdateError = nil
         defer { isCheckingUpdates = false }
 
-        let mangas = state.entries.values.map(\.manga)
+        var results: [(MangaSummary, [Chapter])] = []
         var failures = 0
         await withTaskGroup(of: (MangaSummary, [Chapter]?).self) { group in
             var iterator = mangas.makeIterator()
@@ -137,11 +159,19 @@ final class LibraryStore: ObservableObject {
                 group.addTask { (manga, try? await AniverseAPI.shared.chapters(slug: manga.slug)) }
             }
             while let (manga, chapters) = await group.next() {
-                if let chapters { merge(chapters: chapters, for: manga) } else { failures += 1 }
+                if let chapters { results.append((manga, chapters)) } else { failures += 1 }
                 if let next = iterator.next() {
                     group.addTask { (next, try? await AniverseAPI.shared.chapters(slug: next.slug)) }
                 }
             }
+        }
+        if !results.isEmpty {
+            var updated = state
+            for (manga, chapters) in results {
+                Self.merge(chapters: chapters, for: manga, into: &updated)
+            }
+            state = updated
+            save()
         }
         if failures > 0 {
             lastUpdateError = "\(failures) manga(s) n'ont pas pu être vérifiés."
@@ -167,10 +197,6 @@ final class LibraryStore: ObservableObject {
     }
 
     func progress(for slug: String) -> ReadingProgress? { state.progress[slug] }
-
-    var continueReading: [ReadingProgress] {
-        state.progress.values.sorted { $0.updatedAt > $1.updatedAt }
-    }
 
     func clearHistory() {
         state.progress.removeAll()
