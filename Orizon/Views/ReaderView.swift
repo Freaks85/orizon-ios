@@ -579,41 +579,51 @@ struct ReaderPage: View {
                     }
                 }
             } else {
-                Color.black
-                    .aspectRatio(loadedAspectRatio ?? page.aspectRatio ?? 0.7, contentMode: .fit)
-                    .overlay {
-                        if failed {
-                            Button {
-                                attempt += 1
-                            } label: {
-                                Label("Recharger la page", systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(PillButtonStyle(prominent: false))
-                            .frame(width: 220)
-                        } else {
-                            ProgressView().tint(Theme.pink)
-                        }
-                    }
+                placeholder
+                    // The load belongs to the placeholder, not to the row: whenever the black
+                    // placeholder is on screen it fetches the page, even if List told the row it
+                    // disappeared (and released its image) while it was still visible.
+                    .task(id: "\(page.url.absoluteString)#\(attempt)") { await load() }
             }
         }
         .frame(maxWidth: .infinity)
-        .task(id: "\(page.url.absoluteString)#\(attempt)") {
-            failed = false
-            do {
-                let loaded: SlicedImage
-                if let cached = ImagePipeline.shared.cachedPage(page.url) {
-                    loaded = cached
-                } else {
-                    loaded = try await ImagePipeline.shared.page(for: page.url)
-                }
-                guard !Task.isCancelled else { return }
-                if loaded.size.height > 0 { loadedAspectRatio = Double(loaded.size.width / loaded.size.height) }
-                image = loaded
-            } catch {
-                if !Task.isCancelled { failed = true }
-            }
-        }
         .onDisappear { image = nil }
+    }
+
+    private var placeholder: some View {
+        Color.black
+            .aspectRatio(loadedAspectRatio ?? page.aspectRatio ?? 0.7, contentMode: .fit)
+            .overlay {
+                if failed {
+                    Button {
+                        attempt += 1
+                    } label: {
+                        Label("Recharger la page", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(PillButtonStyle(prominent: false))
+                    .frame(width: 220)
+                } else {
+                    ProgressView().tint(Theme.pink)
+                }
+            }
+    }
+
+    private func load() async {
+        failed = false
+        do {
+            let loaded: SlicedImage
+            if let cached = ImagePipeline.shared.cachedPage(page.url) {
+                loaded = cached
+            } else {
+                loaded = try await ImagePipeline.shared.page(for: page.url)
+            }
+            // Cancelled: the placeholder left the screen, don't hold the image for an off-screen row.
+            guard !Task.isCancelled else { return }
+            if loaded.size.height > 0 { loadedAspectRatio = Double(loaded.size.width / loaded.size.height) }
+            image = loaded
+        } catch {
+            if !Task.isCancelled { failed = true }
+        }
     }
 }
 
