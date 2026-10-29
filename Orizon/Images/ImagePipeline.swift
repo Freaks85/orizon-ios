@@ -331,6 +331,9 @@ struct RemoteImage: View {
                     if !Task.isCancelled { failed = true }
                 }
             }
+            // Same as the reader pages: don't keep the image of every cell ever shown in a long list;
+            // scrolling back finds it in the memory cache (read in the body above).
+            .onDisappear { loaded = nil }
         }
     }
 }

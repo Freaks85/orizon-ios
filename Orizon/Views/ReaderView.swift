@@ -558,7 +558,12 @@ struct ReaderView: View {
 struct ReaderPage: View {
     let page: Page
 
+    /// Only held while the page is on screen: SwiftUI keeps the state of every row the reader has
+    /// shown, and a decoded webtoon strip weighs tens of MB. Kept for good, a long reading session
+    /// grows until iOS kills the app. Scrolling back gets it from the pipeline's cache.
     @State private var image: SlicedImage?
+    /// Shape of the decoded page, so the placeholder keeps its height once the image is released.
+    @State private var loadedAspectRatio: Double?
     @State private var failed = false
     @State private var attempt = 0
 
@@ -575,7 +580,7 @@ struct ReaderPage: View {
                 }
             } else {
                 Color.black
-                    .aspectRatio(page.aspectRatio ?? 0.7, contentMode: .fit)
+                    .aspectRatio(loadedAspectRatio ?? page.aspectRatio ?? 0.7, contentMode: .fit)
                     .overlay {
                         if failed {
                             Button {
@@ -594,16 +599,21 @@ struct ReaderPage: View {
         .frame(maxWidth: .infinity)
         .task(id: "\(page.url.absoluteString)#\(attempt)") {
             failed = false
-            if let cached = ImagePipeline.shared.cachedPage(page.url) {
-                image = cached
-                return
-            }
             do {
-                image = try await ImagePipeline.shared.page(for: page.url)
+                let loaded: SlicedImage
+                if let cached = ImagePipeline.shared.cachedPage(page.url) {
+                    loaded = cached
+                } else {
+                    loaded = try await ImagePipeline.shared.page(for: page.url)
+                }
+                guard !Task.isCancelled else { return }
+                if loaded.size.height > 0 { loadedAspectRatio = Double(loaded.size.width / loaded.size.height) }
+                image = loaded
             } catch {
-                failed = true
+                if !Task.isCancelled { failed = true }
             }
         }
+        .onDisappear { image = nil }
     }
 }
 
