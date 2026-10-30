@@ -558,7 +558,7 @@ struct ReaderView: View {
 struct ReaderPage: View {
     let page: Page
 
-    /// Only held while the page is on screen: SwiftUI keeps the state of every row the reader has
+    /// Only held while the row is on screen: SwiftUI keeps the state of every row the reader has
     /// shown, and a decoded webtoon strip weighs tens of MB. Kept for good, a long reading session
     /// grows until iOS kills the app. Scrolling back gets it from the pipeline's cache.
     @State private var image: SlicedImage?
@@ -568,7 +568,10 @@ struct ReaderPage: View {
     @State private var attempt = 0
 
     var body: some View {
-        Group {
+        // A ZStack, not a Group: modifiers on a Group are applied to each of its children, so
+        // `onDisappear` would fire when the placeholder is replaced by the image (releasing it
+        // at once, in a loop). On the ZStack they follow the row entering and leaving the screen.
+        ZStack {
             if let image {
                 VStack(spacing: 0) {
                     ForEach(image.slices.indices, id: \.self) { index in
@@ -580,13 +583,10 @@ struct ReaderPage: View {
                 }
             } else {
                 placeholder
-                    // The load belongs to the placeholder, not to the row: whenever the black
-                    // placeholder is on screen it fetches the page, even if List told the row it
-                    // disappeared (and released its image) while it was still visible.
-                    .task(id: "\(page.url.absoluteString)#\(attempt)") { await load() }
             }
         }
         .frame(maxWidth: .infinity)
+        .task(id: "\(page.url.absoluteString)#\(attempt)") { await load() }
         .onDisappear { image = nil }
     }
 
@@ -617,7 +617,7 @@ struct ReaderPage: View {
             } else {
                 loaded = try await ImagePipeline.shared.page(for: page.url)
             }
-            // Cancelled: the placeholder left the screen, don't hold the image for an off-screen row.
+            // Cancelled: the row left the screen, don't hold the image for it.
             guard !Task.isCancelled else { return }
             if loaded.size.height > 0 { loadedAspectRatio = Double(loaded.size.width / loaded.size.height) }
             image = loaded
