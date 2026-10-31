@@ -581,15 +581,15 @@ struct ReaderPage: View {
     var body: some View {
         // A page decoded ahead of time is read straight from the cache, in the same frame the row
         // shows up: going through the task would show the black placeholder for a frame or more.
-        let image = self.image ?? (released ? nil : ImagePipeline.shared.cachedPage(page.url))
+        let shown = image ?? (released ? nil : ImagePipeline.shared.cachedPage(page.url))
         // A ZStack, not a Group: modifiers on a Group are applied to each of its children, so
         // `onDisappear` would fire when the placeholder is replaced by the image (releasing it
         // at once, in a loop). On the ZStack they follow the row entering and leaving the screen.
         ZStack {
-            if let image {
+            if let shown {
                 VStack(spacing: 0) {
-                    ForEach(image.slices.indices, id: \.self) { index in
-                        Image(uiImage: image.slices[index])
+                    ForEach(shown.slices.indices, id: \.self) { index in
+                        Image(uiImage: shown.slices[index])
                             .resizable()
                             .interpolation(.medium)
                             .aspectRatio(contentMode: .fit)
