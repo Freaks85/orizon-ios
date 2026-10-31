@@ -147,9 +147,11 @@ final class ImagePipeline {
         pages.object(forKey: url as NSURL)
     }
 
-    func page(for url: URL) async throws -> SlicedImage {
+    /// `priority`: prefetching asks at a lower priority; a page on screen waiting for the same
+    /// load raises it (awaiting a task escalates it).
+    func page(for url: URL, priority: TaskPriority = .userInitiated) async throws -> SlicedImage {
         if let page = cachedPage(url) { return page }
-        return try await inFlightPages.value(for: url.absoluteString, priority: .userInitiated) { [self] in
+        return try await inFlightPages.value(for: url.absoluteString, priority: priority) { [self] in
             let data = try await self.data(for: url)
             try Task.checkCancellation()
             guard let page = Self.decodeSliced(data) else { throw APIError.parsing("la page") }
@@ -206,15 +208,22 @@ final class ImagePipeline {
         let height = full.height
         let cost = width * height * 4
         let sliceHeight = 1600
+        // Slices are copied into the format the screen draws directly, here in the background:
+        // otherwise Core Animation converts each one on the main thread the first time it shows
+        // up (a crop keeps its parent's memory layout), which stalls the scroll.
+        func prepared(_ image: CGImage) -> UIImage {
+            let ui = UIImage(cgImage: image)
+            return ui.preparingForDisplay() ?? ui
+        }
         guard height > sliceHeight * 3 / 2 else {
-            return SlicedImage(slices: [UIImage(cgImage: full)], size: CGSize(width: width, height: height), cost: cost)
+            return SlicedImage(slices: [prepared(full)], size: CGSize(width: width, height: height), cost: cost)
         }
         var slices: [UIImage] = []
         var y = 0
         while y < height {
             let h = min(sliceHeight, height - y)
             if let piece = full.cropping(to: CGRect(x: 0, y: y, width: width, height: h)) {
-                slices.append(UIImage(cgImage: piece))
+                slices.append(prepared(piece))
             }
             y += h
         }

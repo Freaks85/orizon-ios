@@ -17,7 +17,9 @@ struct ReaderView: View {
     @State private var showControls = true
     @State private var showChapterPicker = false
     @State private var showDetails = false
-    @State private var current: (chapterId: String, page: Int)?
+    /// The page being read. A plain reference, not a @StateObject: changing page must not re-render
+    /// this view (and diff the whole list of pages), only the controls, which observe it.
+    @State private var position = ReaderPosition()
     @State private var scrollTarget: String?
     /// Position inside the target page (0…1) to restore once the list shows that page.
     @State private var restoreFraction: Double = 0
@@ -106,7 +108,7 @@ struct ReaderView: View {
             }
 
             if showControls {
-                controls
+                Observing(position) { controls }
                     .transition(.opacity)
             }
         }
@@ -126,7 +128,12 @@ struct ReaderView: View {
         .statusBarHidden(!showControls)
         .preferredColorScheme(.dark)
         .task { await start(at: context.startChapterId, page: context.startPage, offset: context.startOffset) }
-        .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in commitProgress() }
+        .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in
+            // Saving publishes the library, which re-renders the screens under the reader: never
+            // in the middle of a scroll (that was a hitch every 10 s), wait for the list to stop.
+            if let scrollView = tracker.scrollView, scrollView.isTracking || scrollView.isDecelerating { return }
+            commitProgress()
+        }
         .onChange(of: scenePhase) { phase in
             if phase != .active { commitProgress() }
         }
@@ -252,7 +259,7 @@ struct ReaderView: View {
     // MARK: - Controls
 
     private var currentChapter: Chapter? {
-        context.chapter(current?.chapterId ?? context.startChapterId)
+        context.chapter(position.current?.chapterId ?? context.startChapterId)
     }
 
     private var controls: some View {
@@ -291,7 +298,7 @@ struct ReaderView: View {
             }
             .buttonStyle(.plain)
             Spacer(minLength: 6)
-            if let current, let segment = segments.first(where: { $0.chapter.id == current.chapterId }) {
+            if let current = position.current, let segment = segments.first(where: { $0.chapter.id == current.chapterId }) {
                 Text("\(current.page + 1) / \(segment.pages.count)")
                     .font(.footnote.monospacedDigit().weight(.semibold))
                     .padding(.horizontal, 14)
@@ -472,7 +479,7 @@ struct ReaderView: View {
             tracker = ScrollTracker()
             segments = [Segment(chapter: chapter, pages: pages)]
             rebuildItems()
-            current = (chapter.id, index)
+            position.current = ReaderPosition.Spot(chapterId: chapter.id, page: index)
             prefetch(pages, from: index)
             restoreFraction = offset
             scrollTarget = "\(chapter.id)#\(index)"
@@ -511,7 +518,8 @@ struct ReaderView: View {
 
         let chapterChanged = tracker.chapter?.id != chapter.id
         if chapterChanged || tracker.page != index {
-            current = (chapter.id, index)   // only state change: the page counter
+            // Only the controls observe it (see `position`).
+            position.current = ReaderPosition.Spot(chapterId: chapter.id, page: index)
         }
         if chapterChanged, tracker.chapter != nil {
             commitProgress()                // keep the finished chapter's last position
@@ -542,13 +550,14 @@ struct ReaderView: View {
         }
     }
 
-    /// Downloads the next pages ahead of time and decodes the very next one.
+    /// Downloads the next pages ahead of time and decodes the next two, so a page is ready (no black
+    /// placeholder) when it scrolls in. Two: a decoded webtoon strip can weigh tens of MB.
     private func prefetch(_ pages: [Page], from index: Int) {
         guard index < pages.count else { return }
-        let upcoming = Array(pages[index..<min(index + 5, pages.count)])
+        let upcoming = Array(pages[index..<min(index + 6, pages.count)])
         Task.detached(priority: .utility) {
-            if let first = upcoming.first { _ = try? await ImagePipeline.shared.page(for: first.url) }
-            for page in upcoming.dropFirst() { await ImagePipeline.shared.prefetch(page.url) }
+            for page in upcoming.prefix(2) { _ = try? await ImagePipeline.shared.page(for: page.url, priority: .utility) }
+            for page in upcoming.dropFirst(2) { await ImagePipeline.shared.prefetch(page.url) }
         }
     }
 }
@@ -566,8 +575,13 @@ struct ReaderPage: View {
     @State private var loadedAspectRatio: Double?
     @State private var failed = false
     @State private var attempt = 0
+    /// Off screen since its last appearance: it must not take the image from the cache again.
+    @State private var released = false
 
     var body: some View {
+        // A page decoded ahead of time is read straight from the cache, in the same frame the row
+        // shows up: going through the task would show the black placeholder for a frame or more.
+        let image = self.image ?? (released ? nil : ImagePipeline.shared.cachedPage(page.url))
         // A ZStack, not a Group: modifiers on a Group are applied to each of its children, so
         // `onDisappear` would fire when the placeholder is replaced by the image (releasing it
         // at once, in a loop). On the ZStack they follow the row entering and leaving the screen.
@@ -587,7 +601,11 @@ struct ReaderPage: View {
         }
         .frame(maxWidth: .infinity)
         .task(id: "\(page.url.absoluteString)#\(attempt)") { await load() }
-        .onDisappear { image = nil }
+        .onAppear { released = false }
+        .onDisappear {
+            image = nil
+            released = true
+        }
     }
 
     private var placeholder: some View {
@@ -736,4 +754,27 @@ struct ScrollViewLocator: UIViewRepresentable {
             }
         }
     }
+}
+
+/// The page being read, observed by the reader's controls only (set on the main thread).
+final class ReaderPosition: ObservableObject {
+    struct Spot: Equatable {
+        var chapterId: String
+        var page: Int
+    }
+
+    @Published var current: Spot?
+}
+
+/// Re-renders `content` when `object` changes, without the parent view observing it.
+struct Observing<Object: ObservableObject, Content: View>: View {
+    @ObservedObject var object: Object
+    let content: () -> Content
+
+    init(_ object: Object, @ViewBuilder content: @escaping () -> Content) {
+        self.object = object
+        self.content = content
+    }
+
+    var body: some View { content() }
 }

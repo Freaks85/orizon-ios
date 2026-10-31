@@ -38,6 +38,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIUserInterfaceStyle: Dark
+        # ProMotion: lets the app run its animations at up to 120 Hz on iPhone (capped to 60 otherwise).
+        CADisableMinimumFrameDurationOnPhone: true
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UIFileSharingEnabled: true
