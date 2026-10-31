@@ -20,11 +20,11 @@ struct ReaderView: View {
     /// The page being read. A plain reference, not a @StateObject: changing page must not re-render
     /// this view (and diff the whole list of pages), only the controls, which observe it.
     @State private var position = ReaderPosition()
-    @State private var scrollTarget: String?
-    /// Position inside the target page (0…1) to restore once the list shows that page.
-    @State private var restoreFraction: Double = 0
+    /// Where to put the list once it shows a chapter (the saved page, and the point inside it).
+    @State private var scrollRequest: ReaderCollection.ScrollRequest?
     @State private var tracker = ScrollTracker()
     @State private var items: [Item] = []
+    @State private var itemsVersion = 0
 
     /// Reading position, updated on every scroll frame without touching SwiftUI state.
     /// It is written to the library only from time to time (see `commitProgress`):
@@ -35,10 +35,8 @@ struct ReaderView: View {
         var count = 0
         var offset: Double = 0
         var dirty = false
-        /// The UIScrollView behind the SwiftUI List: the position is read from it directly
-        /// (SwiftUI geometry is not updated while UIKit scrolls the list's cells).
+        /// The reader's collection view (to know whether it is scrolling).
         weak var scrollView: UIScrollView?
-        var observation: NSKeyValueObservation?
     }
 
     struct Segment: Identifiable {
@@ -69,6 +67,7 @@ struct ReaderView: View {
             result.append(.divider(finished: segment.chapter, next: chapterAfter(segment.chapter)))
         }
         items = result
+        itemsVersion += 1
     }
 
     var body: some View {
@@ -82,29 +81,23 @@ struct ReaderView: View {
                     ProgressView().tint(Theme.pink)
                 }
             } else {
-                ScrollViewReader { proxy in
-                    List {
-                        ForEach(items) { item in
-                            row(item)
-                                .listRowInsets(EdgeInsets())
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.black)
-                                .id(item.id)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                    .environment(\.defaultMinListRowHeight, 0)
-                    .onChange(of: scrollTarget) { target in
-                        scroll(proxy, to: target)
-                    }
-                    // The list is created in the same update that sets the first target,
-                    // so onChange does not fire for it: handle it on appear.
-                    .onAppear { scroll(proxy, to: scrollTarget) }
-                }
+                ReaderCollection(
+                    items: items,
+                    itemsVersion: itemsVersion,
+                    dividerState: dividerState,
+                    scrollRequest: scrollRequest,
+                    divider: dividerView,
+                    onScroll: positionChanged,
+                    onPageAppear: pageAppeared,
+                    onDividerAppear: dividerAppeared,
+                    onTap: { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } },
+                    // Out of the way while reading: a tap brings them back.
+                    onDragStart: { if showControls { withAnimation(.easeInOut(duration: 0.2)) { showControls = false } } },
+                    onScrollRequestDone: { scrollRequest = nil },
+                    onAttach: { tracker.scrollView = $0 }
+                )
                 // Always full screen: the controls float above the pages without moving them.
                 .ignoresSafeArea()
-                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } }
             }
 
             if showControls {
@@ -140,119 +133,39 @@ struct ReaderView: View {
         .onDisappear { commitProgress() }
     }
 
-    /// Scrolls to the saved page, then puts the saved point inside it exactly at the top
-    /// of the screen using the list's real layout (List.scrollTo only aligns item tops).
-    private func scroll(_ proxy: ScrollViewProxy, to target: String?) {
-        guard let target else { return }
-        let fraction = restoreFraction
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            proxy.scrollTo(target, anchor: .top)
-        }
-        // Again once real row heights are known, then place the exact point.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            proxy.scrollTo(target, anchor: .top)
-            DispatchQueue.main.async {
-                if let scrollView = tracker.scrollView,
-                   let index = items.firstIndex(where: { $0.id == target }),
-                   let frame = Self.rowFrame(index, in: scrollView) {
-                    let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
-                    let y = frame.minY + CGFloat(fraction) * frame.height
-                    scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: min(max(y, 0), maxY)), animated: false)
-                }
-                restoreFraction = 0
-                scrollTarget = nil
-            }
-        }
+    // MARK: - End of chapter
+
+    /// Changes whenever an end-of-chapter row would show something else.
+    private var dividerState: Int {
+        var hasher = Hasher()
+        hasher.combine(loadingNext)
+        hasher.combine(error)
+        hasher.combine(segments.count)
+        return hasher.finalize()
     }
 
-    /// Frame of row `index` in the list's content coordinates.
-    private static func rowFrame(_ index: Int, in scrollView: UIScrollView) -> CGRect? {
-        if let collection = scrollView as? UICollectionView,
-           collection.numberOfSections > 0, index < collection.numberOfItems(inSection: 0) {
-            return collection.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame
-        }
-        if let table = scrollView as? UITableView,
-           table.numberOfSections > 0, index < table.numberOfRows(inSection: 0) {
-            return table.rectForRow(at: IndexPath(row: index, section: 0))
-        }
-        return nil
+    private func dividerView(finished: Chapter, next: Chapter?) -> ReaderDividerView {
+        ReaderDividerView(
+            finished: finished,
+            next: next,
+            nextLocked: next.map { $0.isPremium && !downloads.isDownloaded($0.id) } ?? false,
+            loadingNext: loadingNext,
+            nextLoaded: next.map { next in segments.contains { $0.chapter.id == next.id } } ?? false,
+            error: error,
+            loadNext: { Task { await appendNext() } },
+            close: { dismiss() }
+        )
     }
 
-    /// Row under a point of the list's content, with its frame.
-    private static func hitRow(at point: CGPoint, in scrollView: UIScrollView) -> (Int, CGRect)? {
-        if let collection = scrollView as? UICollectionView,
-           let indexPath = collection.indexPathForItem(at: point),
-           let frame = collection.layoutAttributesForItem(at: indexPath)?.frame {
-            return (indexPath.item, frame)
+    /// Reaching the end marker means the chapter was read to the end.
+    private func dividerAppeared(finished: Chapter, next: Chapter?) {
+        commitProgress()
+        library.setRead(true, chapterIds: [finished.id], slug: context.manga.slug)
+        if autoDeleteRead, downloads.isDownloaded(finished.id) {
+            downloads.delete(finished.id)
         }
-        if let table = scrollView as? UITableView, let indexPath = table.indexPathForRow(at: point) {
-            return (indexPath.row, table.rectForRow(at: indexPath))
-        }
-        return nil
-    }
-
-    private func attach(_ scrollView: UIScrollView) {
-        guard tracker.scrollView !== scrollView else { return }
-        tracker.scrollView = scrollView
-        tracker.observation = scrollView.observe(\.contentOffset, options: [.new]) { scrollView, _ in
-            DispatchQueue.main.async { positionChanged(in: scrollView) }
-        }
-    }
-
-    // MARK: - Rows
-
-    @ViewBuilder
-    private func row(_ item: Item) -> some View {
-        switch item {
-        case .page(let chapter, let index, let count, let page):
-            ReaderPage(page: page)
-                .background(ScrollViewLocator { attach($0) })
-                .onAppear { pageAppeared(chapter: chapter, index: index, count: count) }
-        case .divider(let finished, let next):
-            VStack(spacing: 10) {
-                Text("Fin du chapitre \(finished.number)")
-                    .font(.subheadline.weight(.semibold))
-                if let next {
-                    if next.isPremium && !downloads.isDownloaded(next.id) {
-                        Label("Le chapitre \(next.number) est premium", systemImage: "lock.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.yellow)
-                    } else if loadingNext {
-                        ProgressView().tint(Theme.pink)
-                        Text("Chargement du chapitre \(next.number)…")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else if !segments.contains(where: { $0.chapter.id == next.id }) {
-                        Button("Chapitre \(next.number)") { Task { await appendNext() } }
-                            .buttonStyle(PillButtonStyle())
-                            .frame(width: 200)
-                    }
-                } else {
-                    Text("Tu es à jour ! 🎉")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Button("Fermer") { dismiss() }
-                        .buttonStyle(PillButtonStyle(prominent: false))
-                        .frame(width: 160)
-                }
-                if let error {
-                    Text(error).font(.caption).foregroundStyle(.orange)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
-            .background(Theme.background)
-            .onAppear {
-                // Reaching the end marker means the chapter was read to the end.
-                commitProgress()
-                library.setRead(true, chapterIds: [finished.id], slug: context.manga.slug)
-                if autoDeleteRead, downloads.isDownloaded(finished.id) {
-                    downloads.delete(finished.id)
-                }
-                if let next, !segments.contains(where: { $0.chapter.id == next.id }) {
-                    Task { await appendNext() }
-                }
-            }
+        if let next, !segments.contains(where: { $0.chapter.id == next.id }) {
+            Task { await appendNext() }
         }
     }
 
@@ -476,13 +389,14 @@ struct ReaderView: View {
             let pages = try await loadPages(for: chapter)
             let index = max(0, min(page, pages.count - 1))
             commitProgress()
+            let scrollView = tracker.scrollView
             tracker = ScrollTracker()
+            tracker.scrollView = scrollView
             segments = [Segment(chapter: chapter, pages: pages)]
             rebuildItems()
             position.current = ReaderPosition.Spot(chapterId: chapter.id, page: index)
             prefetch(pages, from: index)
-            restoreFraction = offset
-            scrollTarget = "\(chapter.id)#\(index)"
+            scrollRequest = ReaderCollection.ScrollRequest(itemId: "\(chapter.id)#\(index)", fraction: offset)
         } catch {
             self.error = error.localizedDescription
         }
@@ -507,14 +421,9 @@ struct ReaderView: View {
 
     /// Called while scrolling: the page at the top of the screen is the one being read,
     /// and the part of it already above the top is the position inside that page.
-    private func positionChanged(in scrollView: UIScrollView) {
-        guard scrollTarget == nil else { return }
-        let point = CGPoint(x: scrollView.bounds.midX, y: scrollView.contentOffset.y + 1)
-        guard let hit = Self.hitRow(at: point, in: scrollView) else { return }
-        let (row, frame) = hit
-        guard frame.height > 0, row < items.count,
+    private func positionChanged(row: Int, offset: Double) {
+        guard scrollRequest == nil, row < items.count,
               case .page(let chapter, let index, let count, _) = items[row] else { return }
-        let offset = Double(min(max((point.y - frame.minY) / frame.height, 0), 1))
 
         let chapterChanged = tracker.chapter?.id != chapter.id
         if chapterChanged || tracker.page != index {
@@ -558,89 +467,6 @@ struct ReaderView: View {
         Task.detached(priority: .utility) {
             for page in upcoming.prefix(2) { _ = try? await ImagePipeline.shared.page(for: page.url, priority: .utility) }
             for page in upcoming.dropFirst(2) { await ImagePipeline.shared.prefetch(page.url) }
-        }
-    }
-}
-
-/// One page of the reader, sized from the page dimensions when known so the layout does not jump.
-/// Tall pages are drawn as a stack of slices (see `SlicedImage`) for smooth scrolling.
-struct ReaderPage: View {
-    let page: Page
-
-    /// Only held while the row is on screen: SwiftUI keeps the state of every row the reader has
-    /// shown, and a decoded webtoon strip weighs tens of MB. Kept for good, a long reading session
-    /// grows until iOS kills the app. Scrolling back gets it from the pipeline's cache.
-    @State private var image: SlicedImage?
-    /// Shape of the decoded page, so the placeholder keeps its height once the image is released.
-    @State private var loadedAspectRatio: Double?
-    @State private var failed = false
-    @State private var attempt = 0
-    /// Off screen since its last appearance: it must not take the image from the cache again.
-    @State private var released = false
-
-    var body: some View {
-        // A page decoded ahead of time is read straight from the cache, in the same frame the row
-        // shows up: going through the task would show the black placeholder for a frame or more.
-        let shown = image ?? (released ? nil : ImagePipeline.shared.cachedPage(page.url))
-        // A ZStack, not a Group: modifiers on a Group are applied to each of its children, so
-        // `onDisappear` would fire when the placeholder is replaced by the image (releasing it
-        // at once, in a loop). On the ZStack they follow the row entering and leaving the screen.
-        ZStack {
-            if let shown {
-                VStack(spacing: 0) {
-                    ForEach(shown.slices.indices, id: \.self) { index in
-                        Image(uiImage: shown.slices[index])
-                            .resizable()
-                            .interpolation(.medium)
-                            .aspectRatio(contentMode: .fit)
-                    }
-                }
-            } else {
-                placeholder
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .task(id: "\(page.url.absoluteString)#\(attempt)") { await load() }
-        .onAppear { released = false }
-        .onDisappear {
-            image = nil
-            released = true
-        }
-    }
-
-    private var placeholder: some View {
-        Color.black
-            .aspectRatio(loadedAspectRatio ?? page.aspectRatio ?? 0.7, contentMode: .fit)
-            .overlay {
-                if failed {
-                    Button {
-                        attempt += 1
-                    } label: {
-                        Label("Recharger la page", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(PillButtonStyle(prominent: false))
-                    .frame(width: 220)
-                } else {
-                    ProgressView().tint(Theme.pink)
-                }
-            }
-    }
-
-    private func load() async {
-        failed = false
-        do {
-            let loaded: SlicedImage
-            if let cached = ImagePipeline.shared.cachedPage(page.url) {
-                loaded = cached
-            } else {
-                loaded = try await ImagePipeline.shared.page(for: page.url)
-            }
-            // Cancelled: the row left the screen, don't hold the image for it.
-            guard !Task.isCancelled else { return }
-            if loaded.size.height > 0 { loadedAspectRatio = Double(loaded.size.width / loaded.size.height) }
-            image = loaded
-        } catch {
-            if !Task.isCancelled { failed = true }
         }
     }
 }
@@ -728,31 +554,6 @@ struct ChapterCard: View {
         )
         .opacity(isRead && !isCurrent ? 0.45 : 1)
         .foregroundStyle(.white)
-    }
-}
-
-/// Finds the UIScrollView that hosts a SwiftUI view (here: the List of the reader).
-struct ScrollViewLocator: UIViewRepresentable {
-    let onFound: (UIScrollView) -> Void
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isUserInteractionEnabled = false
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        DispatchQueue.main.async {
-            var current: UIView? = uiView.superview
-            while let view = current {
-                if let scrollView = view as? UIScrollView {
-                    onFound(scrollView)
-                    return
-                }
-                current = view.superview
-            }
-        }
     }
 }
 
