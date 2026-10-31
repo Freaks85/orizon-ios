@@ -80,6 +80,9 @@ final class ImagePipeline {
     private let session: URLSession
     private let inFlightImages = TaskCoalescer<UIImage>()
     private let inFlightPages = TaskCoalescer<SlicedImage>()
+    /// Width in pixels the reader shows pages at (0 until known): wider pages are decoded at it.
+    private var pageWidth: CGFloat = 0
+    private let pageWidthLock = NSLock()
 
     static let cacheLimitKey = "imageCacheLimitMB"
     static let defaultCacheLimitMB = 500
@@ -154,7 +157,7 @@ final class ImagePipeline {
         return try await inFlightPages.value(for: url.absoluteString, priority: priority) { [self] in
             let data = try await self.data(for: url)
             try Task.checkCancellation()
-            guard let page = Self.decodeSliced(data) else { throw APIError.parsing("la page") }
+            guard let page = Self.decodeSliced(data, width: self.currentPageWidth) else { throw APIError.parsing("la page") }
             self.pages.setObject(page, forKey: url as NSURL, cost: page.cost)
             return page
         }
@@ -198,16 +201,52 @@ final class ImagePipeline {
         return UIImage(cgImage: cgImage)
     }
 
-    private static func decodeSliced(_ data: Data) -> SlicedImage? {
+    /// Called by the reader's layout with the width it shows pages at.
+    func setPageWidth(_ width: CGFloat) {
+        let grew: Bool = {
+            pageWidthLock.lock()
+            defer { pageWidthLock.unlock() }
+            let grew = pageWidth > 0 && width > pageWidth * 1.05
+            pageWidth = width
+            return grew
+        }()
+        // Pages decoded for a narrower screen (before a rotation) would look soft: decode them again.
+        if grew { pages.removeAllObjects() }
+    }
+
+    private var currentPageWidth: CGFloat {
+        pageWidthLock.lock()
+        defer { pageWidthLock.unlock() }
+        return pageWidth
+    }
+
+    /// Decodes a reader page, at `width` pixels when it is wider than that (less to decode, to keep in
+    /// memory and to send to the GPU, for no visible difference), cut into slices.
+    private static func decodeSliced(_ data: Data, width targetWidth: CGFloat) -> SlicedImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions),
-              let full = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
-        else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let sourceWidth = (properties?[kCGImagePropertyPixelWidth] as? NSNumber).map { CGFloat($0.doubleValue) } ?? 0
+        let sourceHeight = (properties?[kCGImagePropertyPixelHeight] as? NSNumber).map { CGFloat($0.doubleValue) } ?? 0
+        let decoded: CGImage?
+        if targetWidth > 0, sourceWidth > targetWidth * 1.05, sourceHeight > 0 {
+            decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: (max(sourceWidth, sourceHeight) * targetWidth / sourceWidth).rounded(.up)
+            ] as CFDictionary)
+        } else {
+            decoded = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        }
+        guard let full = decoded else { return nil }
 
         let width = full.width
         let height = full.height
         let cost = width * height * 4
-        let sliceHeight = 1600
+        // Small slices: each one is sent to the GPU the first time it shows up, a big one at once
+        // takes longer than a frame.
+        let sliceHeight = 1024
         // Slices are copied into the format the screen draws directly, here in the background:
         // otherwise Core Animation converts each one on the main thread the first time it shows
         // up (a crop keeps its parent's memory layout), which stalls the scroll.

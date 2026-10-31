@@ -255,6 +255,14 @@ struct ReaderCollection: UIViewRepresentable {
 
 /// Re-lays out the rows when the width changes (rotation, iPad split view).
 private final class ReaderLayout: UICollectionViewFlowLayout {
+    override func prepare() {
+        // Pages are decoded at the width they are shown at (before the cells of this pass ask for them).
+        if let collectionView, collectionView.bounds.width > 0 {
+            ImagePipeline.shared.setPageWidth(collectionView.bounds.width * collectionView.traitCollection.displayScale)
+        }
+        super.prepare()
+    }
+
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
         newBounds.width != collectionView?.bounds.width
     }

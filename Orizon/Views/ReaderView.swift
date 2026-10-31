@@ -459,14 +459,24 @@ struct ReaderView: View {
         }
     }
 
-    /// Downloads the next pages ahead of time and decodes the next two, so a page is ready (no black
-    /// placeholder) when it scrolls in. Two: a decoded webtoon strip can weigh tens of MB.
+    /// Downloads the next pages ahead of time and decodes the nearest ones, so a page is ready (no
+    /// black placeholder) when it scrolls in.
     private func prefetch(_ pages: [Page], from index: Int) {
         guard index < pages.count else { return }
-        let upcoming = Array(pages[index..<min(index + 6, pages.count)])
+        // Decode about 2.5 screens ahead (2 to 6 pages): short manga pages need more of them than
+        // webtoon strips, whose decoded bitmaps are big.
+        let screen = tracker.scrollView?.bounds.size ?? CGSize(width: 390, height: 844)
+        var decodeCount = 0
+        var covered: CGFloat = 0
+        while index + decodeCount < pages.count, decodeCount < 6, decodeCount < 2 || covered < screen.height * 2.5 {
+            covered += screen.width / CGFloat(pages[index + decodeCount].aspectRatio ?? 0.7)
+            decodeCount += 1
+        }
+        let toDecode = Array(pages[index..<(index + decodeCount)])
+        let toDownload = Array(pages[(index + decodeCount)..<min(index + 10, pages.count)])
         Task.detached(priority: .utility) {
-            for page in upcoming.prefix(2) { _ = try? await ImagePipeline.shared.page(for: page.url, priority: .utility) }
-            for page in upcoming.dropFirst(2) { await ImagePipeline.shared.prefetch(page.url) }
+            for page in toDecode { _ = try? await ImagePipeline.shared.page(for: page.url, priority: .utility) }
+            for page in toDownload { await ImagePipeline.shared.prefetch(page.url) }
         }
     }
 }
