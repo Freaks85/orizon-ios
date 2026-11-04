@@ -129,6 +129,8 @@ struct PagedResult<T> {
     var hasNextPage: Bool
 }
 
+extension PagedResult: Sendable where T: Sendable {}
+
 enum SortOrder: String, CaseIterable, Identifiable {
     case popularity, newest, rating, title
 

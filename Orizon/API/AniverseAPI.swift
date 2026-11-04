@@ -77,13 +77,23 @@ final class AniverseAPI {
         if let genre { query.append(URLQueryItem(name: "genre", value: genre)) }
         let json = try await getJSON("api/manga", query: query)
         let items = (json["items"] as? [[String: Any]] ?? []).compactMap(summary)
+        await CountryIndex.shared.record(items)
+        return PagedResult(items: items, hasNextPage: json["hasNextPage"] as? Bool ?? false)
+    }
+
+    /// A page of the "recently updated" list, as is (used to build `CountryIndex`).
+    func latestPage(_ page: Int) async throws -> PagedResult<MangaSummary> {
+        let json = try await getJSON("api/manga", query: [URLQueryItem(name: "page", value: String(page))])
+        let items = (json["items"] as? [[String: Any]] ?? []).compactMap(summary)
         return PagedResult(items: items, hasNextPage: json["hasNextPage"] as? Bool ?? false)
     }
 
     /// Catalogue search; also used for "popular" and "newest" home rows.
     func search(query: String = "", sort: SortOrder = .popularity, genres: [String] = [], statuses: [String] = [], page: Int) async throws -> PagedResult<MangaSummary> {
         let (items, hasNextPage) = try await searchItems(media: "manga", query: query, sort: sort, genres: genres, statuses: statuses, page: page)
-        return PagedResult(items: items.compactMap(summary), hasNextPage: hasNextPage)
+        // The search does not say where a title comes from: taken from the catalogue index, so the
+        // webtoon and manga searches each get their own titles.
+        return PagedResult(items: await CountryIndex.shared.fill(items.compactMap(summary)), hasNextPage: hasNextPage)
     }
 
     private func searchItems(media: String, query: String, sort: SortOrder, genres: [String] = [], statuses: [String] = [], page: Int) async throws -> ([[String: Any]], Bool) {
@@ -457,6 +467,110 @@ actor SeriesIdCache {
         if let ids { return ids }
         let read = Persistence.load([String: String].self, from: Self.fileName) ?? [:]
         ids = read
+        return read
+    }
+}
+
+/// slug → country of origin of the whole manga catalogue. The search does not give it, the "recently
+/// updated" list does: it is walked once (a few seconds, in the background), then again every few days.
+actor CountryIndex {
+    static let shared = CountryIndex()
+    private static let fileName = "country-index.json"
+    private static let refreshInterval: TimeInterval = 3 * 24 * 3600
+
+    private struct Stored: Codable {
+        var countries: [String: String] = [:]
+        /// Last complete walk of the catalogue (nil: never finished).
+        var builtAt: Date?
+    }
+
+    private var stored: Stored?
+    private var building: Task<Void, Never>?
+
+    /// Countries seen in a list that gives them.
+    func record(_ items: [MangaSummary]) {
+        var index = loaded()
+        var changed = false
+        for item in items {
+            if let country = item.country, !country.isEmpty, index.countries[item.slug] != country {
+                index.countries[item.slug] = country
+                changed = true
+            }
+        }
+        guard changed else { return }
+        stored = index
+        // Small and rare (new titles): written at once, the walk itself saves at the end.
+        if building == nil { Persistence.save(index, to: Self.fileName) }
+    }
+
+    /// Sets the country (and the kind label) of the titles that have none. Waits for the index the
+    /// first time it is built; later refreshes run in the background.
+    func fill(_ items: [MangaSummary]) async -> [MangaSummary] {
+        guard items.contains(where: { $0.country?.isEmpty ?? true }) else { return items }
+        await prepare()
+        let countries = loaded().countries
+        return items.map { item in
+            guard item.country?.isEmpty ?? true, let country = countries[item.slug] else { return item }
+            var filled = item
+            filled.country = country
+            filled.kind = MangaKind.label(type: nil, country: country) ?? item.kind
+            return filled
+        }
+    }
+
+    /// Builds the index when there is none (and waits for it), refreshes it when it is old.
+    func prepare() async {
+        let index = loaded()
+        let stale = index.builtAt.map { Date().timeIntervalSince($0) > Self.refreshInterval } ?? true
+        guard stale else { return }
+        if building == nil {
+            building = Task { await self.build() }
+        }
+        if index.builtAt == nil, let building {
+            await building.value
+        }
+    }
+
+    private func build() async {
+        var countries: [String: String] = [:]
+        var complete = false
+        var page = 1
+        // A few pages at a time: about 150 small JSON pages for the whole catalogue.
+        walk: while page <= 400 {
+            let pages = page..<(page + 4)
+            let results = await withTaskGroup(of: (Int, PagedResult<MangaSummary>?).self) { group in
+                for number in pages {
+                    group.addTask { (number, try? await AniverseAPI.shared.latestPage(number)) }
+                }
+                var all: [(Int, PagedResult<MangaSummary>?)] = []
+                for await result in group { all.append(result) }
+                return all.sorted { $0.0 < $1.0 }
+            }
+            for (_, result) in results {
+                // A failed page: keep what was found, the walk is tried again next time.
+                guard let result else { break walk }
+                for item in result.items {
+                    if let country = item.country, !country.isEmpty { countries[item.slug] = country }
+                }
+                if !result.hasNextPage || result.items.isEmpty {
+                    complete = true
+                    break walk
+                }
+            }
+            page += pages.count
+        }
+        var index = loaded()
+        index.countries.merge(countries) { _, found in found }
+        if complete { index.builtAt = Date() }
+        stored = index
+        Persistence.save(index, to: Self.fileName)
+        building = nil
+    }
+
+    private func loaded() -> Stored {
+        if let stored { return stored }
+        let read = Persistence.load(Stored.self, from: Self.fileName) ?? Stored()
+        stored = read
         return read
     }
 }

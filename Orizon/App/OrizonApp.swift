@@ -101,6 +101,8 @@ struct RootView: View {
             ])
         }
         .background(Theme.background)
+        // Where each title comes from, for the webtoon / manga searches: ready before the first one.
+        .task(priority: .background) { await CountryIndex.shared.prepare() }
     }
 }
 
