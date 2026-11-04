@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SearchView: View {
     /// Webtoons or mangas: the catalogue search covers both, results are sorted out here.
-    @Binding var mode: HomeMode
+    var mode: HomeMode = .manga
     @State private var query = ""
     @State private var sort: SortOrder = .popularity
     @State private var genres: Set<String> = []
@@ -21,9 +21,6 @@ struct SearchView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Search webtoons, mangas or animes without going back to the home screen.
-                    HomeModeSwitch(mode: $mode)
-                        .frame(maxWidth: .infinity)
                     filters
                     MangaGrid(loader: loader)
                 }

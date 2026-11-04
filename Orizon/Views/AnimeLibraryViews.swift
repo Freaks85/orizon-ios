@@ -286,7 +286,6 @@ struct AnimeLibraryView: View {
 // MARK: - Recherche
 
 struct AnimeSearchView: View {
-    @Binding var mode: HomeMode
     @State private var query = ""
     @State private var sort: SortOrder = .popularity
     @StateObject private var loader = PagedLoader<Anime>(key: { $0.listKey }) {
@@ -299,8 +298,6 @@ struct AnimeSearchView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HomeModeSwitch(mode: $mode)
-                        .frame(maxWidth: .infinity)
                     Picker("Trier par", selection: $sort) {
                         ForEach(SortOrder.allCases) { Text($0.label).tag($0) }
                     }

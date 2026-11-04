@@ -85,7 +85,7 @@ struct RootView: View {
             }
             .tag(AppTab.home).toolbar(.hidden, for: .tabBar)
             Group {
-                if homeMode == .anime { AnimeSearchView(mode: $homeMode) } else { SearchView(mode: $homeMode).id(homeMode) }
+                if homeMode == .anime { AnimeSearchView() } else { SearchView(mode: homeMode).id(homeMode) }
             }
             .tag(AppTab.search).toolbar(.hidden, for: .tabBar)
             Group {
