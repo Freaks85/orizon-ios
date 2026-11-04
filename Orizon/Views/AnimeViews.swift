@@ -1,12 +1,40 @@
 import SwiftUI
 
-enum HomeMode: CaseIterable {
-    case manga, anime
+/// What the app shows: webtoons (Korean manhwa, Chinese manhua), Japanese mangas, or animes.
+/// Webtoons and mangas come from the same catalogue, sorted by country of origin.
+enum HomeMode: String, CaseIterable {
+    case webtoon, manga, anime
 
-    var label: String { self == .manga ? "Manga" : "Animé" }
+    var label: String {
+        switch self {
+        case .webtoon: return "Webtoon"
+        case .manga: return "Manga"
+        case .anime: return "Animé"
+        }
+    }
+
+    /// Whether a title of the manga catalogue belongs to this mode.
+    func accepts(_ manga: MangaSummary) -> Bool {
+        switch self {
+        case .webtoon: return manga.isWebtoon
+        case .manga: return !manga.isWebtoon
+        case .anime: return false
+        }
+    }
+
+    /// Fetches a page of the manga catalogue, keeping the titles of this mode.
+    func filter(_ fetch: @escaping (Int) async throws -> PagedResult<MangaSummary>) -> (Int) async throws -> PagedResult<MangaSummary> {
+        let mode = self
+        return { page in
+            let result = try await fetch(page)
+            // A page can hold none of this mode's titles: more pages may still follow (the loader
+            // keeps loading until it has enough), unless the catalogue itself is empty.
+            return PagedResult(items: result.items.filter(mode.accepts), hasNextPage: result.hasNextPage && !result.items.isEmpty)
+        }
+    }
 }
 
-/// Manga / Animé switch shown at the top of the home screen.
+/// Webtoon / Manga / Animé switch shown at the top of the home screen.
 struct HomeModeSwitch: View {
     @Binding var mode: HomeMode
     @Namespace private var highlight
@@ -19,9 +47,10 @@ struct HomeModeSwitch: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { mode = item }
                 } label: {
                     Text(item.label)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(Color.white.opacity(mode == item ? 1 : 0.6))
-                        .padding(.horizontal, 14)
+                        .lineLimit(1)
+                        .padding(.horizontal, 11)
                         .padding(.vertical, 7)
                         .background {
                             if mode == item {

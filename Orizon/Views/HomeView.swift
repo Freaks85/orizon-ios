@@ -45,10 +45,19 @@ final class HomeModel: ObservableObject {
     @Published var popular: [MangaSummary] = []
     @Published var error: String?
 
-    func load() async {
+    /// The most popular titles of `mode`: a few pages, since webtoons and mangas share the ranking.
+    func load(mode: HomeMode) async {
         error = nil
         do {
-            popular = try await AniverseAPI.shared.search(sort: .popularity, page: 1).items
+            var found: [MangaSummary] = []
+            var page = 1
+            while found.count < 20, page <= 4 {
+                let result = try await AniverseAPI.shared.search(sort: .popularity, page: page)
+                found += result.items.filter { mode.accepts($0) && !found.contains($0) }
+                guard result.hasNextPage else { break }
+                page += 1
+            }
+            popular = found
         } catch {
             self.error = error.localizedDescription
         }
@@ -77,10 +86,11 @@ struct HomeView: View {
                         Color.clear.frame(height: 110)
                     }
 
-                    if !library.continueReading.isEmpty {
+                    let history = library.continueReading.filter { mode.accepts($0.manga) }
+                    if !history.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
                             SectionHeader(title: "Historique")
-                            HistoryRow(items: Array(library.continueReading.prefix(15)))
+                            HistoryRow(items: Array(history.prefix(15)))
                         }
                     }
 
@@ -88,7 +98,7 @@ struct HomeView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             SectionHeader(title: "Populaires") {
                                 NavigationLink {
-                                    PagedGridScreen(title: "Populaires") { try await AniverseAPI.shared.search(sort: .popularity, page: $0) }
+                                    PagedGridScreen(title: "Populaires", fetch: mode.filter { try await AniverseAPI.shared.search(sort: .popularity, page: $0) })
                                 } label: {
                                     Text("Tout voir").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.pink)
                                 }
@@ -148,15 +158,18 @@ struct HomeView: View {
                 Text(openError ?? "")
             }
             .task {
-                if model.popular.isEmpty { await model.load() }
-                if releases.items.isEmpty { await releases.loadMore() }
+                if model.popular.isEmpty { await model.load(mode: mode) }
+                if releases.items.isEmpty {
+                    releases.reset(fetch: mode.filter { try await AniverseAPI.shared.latest(page: $0) })
+                    await releases.loadMore()
+                }
             }
         }
     }
 
     private func reload() async {
-        releases.reset { try await AniverseAPI.shared.latest(page: $0) }
-        async let popular: Void = model.load()
+        releases.reset(fetch: mode.filter { try await AniverseAPI.shared.latest(page: $0) })
+        async let popular: Void = model.load(mode: mode)
         async let latest: Void = releases.loadMore()
         _ = await (popular, latest)
     }
@@ -193,7 +206,7 @@ struct HomeView: View {
                 LazyHStack(spacing: 12) {
                     ForEach(GenreInfo.all) { genre in
                         NavigationLink {
-                            PagedGridScreen(title: genre.name) { try await AniverseAPI.shared.latest(page: $0, genre: genre.id) }
+                            PagedGridScreen(title: genre.name, fetch: mode.filter { try await AniverseAPI.shared.latest(page: $0, genre: genre.id) })
                         } label: {
                             GenreCard(genre: genre)
                         }
@@ -271,10 +284,9 @@ struct Logo: View {
                 .resizable()
                 .frame(width: 30, height: 30)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            Text("Orizon")
-                .font(.system(.title3, design: .rounded).weight(.heavy))
-                .foregroundStyle(.white)
+            // No name next to it: the Webtoon / Manga / Animé switch needs the room.
         }
+        .accessibilityLabel("Orizon")
         .shadow(color: .black.opacity(0.4), radius: 6)
     }
 }

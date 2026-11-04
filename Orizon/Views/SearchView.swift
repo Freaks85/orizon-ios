@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SearchView: View {
+    /// Webtoons or mangas: the catalogue search covers both, results are sorted out here.
+    var mode: HomeMode = .manga
     @State private var query = ""
     @State private var sort: SortOrder = .popularity
     @State private var genres: Set<String> = []
@@ -27,14 +29,14 @@ struct SearchView: View {
             .background(Theme.background)
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("Recherche")
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Rechercher un manga par titre…")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: mode == .webtoon ? "Rechercher un webtoon par titre…" : "Rechercher un manga par titre…")
             .navigationDestination(for: MangaSummary.self) { MangaDetailView(manga: $0) }
             .task(id: searchKey) {
                 // Debounce typing.
                 if !query.isEmpty { try? await Task.sleep(nanoseconds: 350_000_000) }
                 if Task.isCancelled { return }
                 let q = query, s = sort, g = Array(genres).sorted(), st = statuses.map(\.rawValue).sorted()
-                loader.reset { page in try await AniverseAPI.shared.search(query: q, sort: s, genres: g, statuses: st, page: page) }
+                loader.reset(fetch: mode.filter { page in try await AniverseAPI.shared.search(query: q, sort: s, genres: g, statuses: st, page: page) })
                 await loader.loadMore()
             }
         }

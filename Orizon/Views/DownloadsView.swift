@@ -13,9 +13,9 @@ struct DownloadsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if mode == .manga && !downloads.jobs.isEmpty {
+                if mode != .anime && !chapterJobs.isEmpty {
                     Section {
-                        ForEach(downloads.jobs) { job in
+                        ForEach(chapterJobs) { job in
                             JobRow(job: job, progress: downloads.progress)
                                 .swipeActions {
                                     Button(role: .destructive) { downloads.cancel(job.id) } label: {
@@ -25,7 +25,7 @@ struct DownloadsView: View {
                         }
                     } header: {
                         HStack {
-                            Text("En cours (\(downloads.jobs.count))")
+                            Text("En cours (\(chapterJobs.count))")
                             Spacer()
                             if downloads.jobs.contains(where: { if case .failed = $0.state { return true } else { return false } }) {
                                 Button("Réessayer") { downloads.retryFailed() }
@@ -107,7 +107,7 @@ struct DownloadsView: View {
                     .listRowBackground(Theme.surface)
                 }
 
-                ForEach(mode == .manga ? downloads.downloadedByManga : []) { group in
+                ForEach(mode != .anime ? downloads.downloadedByManga.filter { mode.accepts($0.manga) } : []) { group in
                     Section {
                         ForEach(group.chapters) { item in
                             HStack {
@@ -154,7 +154,7 @@ struct DownloadsView: View {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: 44))
                             .foregroundStyle(Theme.gradient)
-                        Text(mode == .manga
+                        Text(mode != .anime
                              ? "Aucun chapitre téléchargé.\nGlisse un chapitre vers la gauche ou utilise le menu « … » d'un manga."
                              : "Aucun épisode téléchargé.\nTouche la flèche d'un épisode ou celle en haut de la fiche d'un animé.")
                             .multilineTextAlignment(.center)
@@ -178,9 +178,9 @@ struct DownloadsView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            if mode == .manga {
+                            if mode != .anime {
                             Button {
-                                let count = downloads.deleteRead { library.isRead($0.chapter.id, slug: $0.manga.slug) }
+                                let count = downloads.deleteRead { mode.accepts($0.manga) && library.isRead($0.chapter.id, slug: $0.manga.slug) }
                                 deletedMessage = count == 0 ? "Aucun chapitre lu à supprimer." : "\(count) chapitre(s) lu(s) supprimé(s)."
                             } label: {
                                 Label("Supprimer les chapitres lus", systemImage: "eye.slash")
@@ -197,7 +197,13 @@ struct DownloadsView: View {
             }
             .confirmationDialog("Supprimer tous les téléchargements ?", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
                 Button("Tout supprimer (\(totalBytes.fileSize))", role: .destructive) {
-                    if mode == .manga { downloads.deleteEverything() } else { episodes.deleteEverything() }
+                    if mode == .anime {
+                        episodes.deleteEverything()
+                    } else {
+                        // Only this mode's titles: the webtoons stay when emptying the mangas, and back.
+                        for job in chapterJobs { downloads.cancel(job.id) }
+                        downloads.deleteRead { mode.accepts($0.manga) }
+                    }
                 }
             }
             .alert(deletedMessage ?? "", isPresented: Binding(get: { deletedMessage != nil }, set: { if !$0 { deletedMessage = nil } })) {
@@ -208,10 +214,21 @@ struct DownloadsView: View {
     }
 
     private var isEmpty: Bool {
-        mode == .manga ? downloads.jobs.isEmpty && downloads.downloaded.isEmpty : episodes.jobs.isEmpty && episodes.downloaded.isEmpty
+        mode != .anime
+            ? chapterJobs.isEmpty && !downloads.downloaded.values.contains { mode.accepts($0.manga) }
+            : episodes.jobs.isEmpty && episodes.downloaded.isEmpty
     }
 
-    private var totalBytes: Int64 { mode == .manga ? downloads.totalBytes : episodes.totalBytes }
+    /// The chapter downloads of this mode (webtoons or mangas).
+    private var chapterJobs: [DownloadJob] {
+        downloads.jobs.filter { mode.accepts($0.manga) }
+    }
+
+    private var totalBytes: Int64 {
+        mode == .anime
+            ? episodes.totalBytes
+            : downloads.downloaded.values.filter { mode.accepts($0.manga) }.reduce(0) { $0 + $1.byteCount }
+    }
 }
 
 struct JobRow: View {

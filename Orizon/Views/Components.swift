@@ -337,21 +337,27 @@ final class PagedLoader<Item: Identifiable & Hashable>: ObservableObject {
         isLoading = true
         error = nil
         let currentGeneration = generation
+        var added: [Item] = []
+        var fetched = 0
         do {
-            let result = try await fetch(page)
-            guard currentGeneration == generation else { return }
-            var added: [Item] = []
-            for item in result.items where positions[key(item)] == nil {
-                positions[key(item)] = items.count + added.count
-                added.append(item)
-            }
-            items += added   // a single change for the whole page
-            hasMore = result.hasNextPage && !result.items.isEmpty
-            page += 1
+            // A filtered list (webtoons only, mangas only) can get few items from a page: fetch the
+            // next ones until there are enough to fill the screen (and to trigger the next load).
+            repeat {
+                let result = try await fetch(page)
+                guard currentGeneration == generation else { return }
+                for item in result.items where positions[key(item)] == nil {
+                    positions[key(item)] = items.count + added.count
+                    added.append(item)
+                }
+                hasMore = result.hasNextPage
+                page += 1
+                fetched += 1
+            } while hasMore && added.count < 12 && fetched < 5
         } catch {
             guard currentGeneration == generation else { return }
             self.error = error.localizedDescription
         }
+        items += added   // a single change for what was loaded
         isLoading = false
     }
 }

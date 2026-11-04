@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct LibraryView: View {
+    /// Webtoons or mangas: one library, each mode shows its own titles.
+    var mode: HomeMode = .manga
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var downloads: DownloadManager
 
@@ -20,7 +22,8 @@ struct LibraryView: View {
             VStack(spacing: 0) {
                 Picker("", selection: $tab) {
                     ForEach(Tab.allCases) { tab in
-                        Text(tab == .updates && library.newChapterCount > 0 ? "\(tab.rawValue) (\(library.newChapterCount))" : tab.rawValue)
+                        let newCount = newChapters.count
+                        Text(tab == .updates && newCount > 0 ? "\(tab.rawValue) (\(newCount))" : tab.rawValue)
                             .tag(tab)
                     }
                 }
@@ -50,9 +53,14 @@ struct LibraryView: View {
         }
     }
 
+    private var newChapters: [NewChapterItem] {
+        library.newChapters.filter { mode.accepts($0.manga) }
+    }
+
     @ViewBuilder
     private var libraryGrid: some View {
-        if library.entries.isEmpty {
+        let entries = library.entries.filter { mode.accepts($0.manga) }
+        if entries.isEmpty {
             emptyState(icon: "bookmark", text: "Ta liste est vide.\nAjoute des mangas depuis leur fiche avec le bouton « Ajouter ».")
         } else {
             ScrollView {
@@ -60,7 +68,7 @@ struct LibraryView: View {
                     Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal)
                 }
                 LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(library.entries) { entry in
+                    ForEach(entries) { entry in
                         NavigationLink(value: entry.manga) {
                             MangaCard(manga: entry.manga, badge: entry.newChapterIds.count, caption: caption(for: entry))
                         }
@@ -101,7 +109,7 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var updatesList: some View {
-        let items = library.newChapters
+        let items = newChapters
         if items.isEmpty {
             emptyState(icon: "sparkles", text: "Aucun nouveau chapitre.\nTire vers le bas pour vérifier.")
                 .refreshable { await library.checkForUpdates() }

@@ -70,32 +70,34 @@ struct RootView: View {
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var episodeDownloads: EpisodeDownloads
     @State private var tab: AppTab = .home
-    @State private var homeMode: HomeMode = .manga
+    /// Remembered between launches.
+    @AppStorage("homeMode") private var homeMode: HomeMode = .manga
 
     var body: some View {
         TabView(selection: $tab) {
             Group {
-                if homeMode == .manga {
-                    HomeView(mode: $homeMode)
-                } else {
+                if homeMode == .anime {
                     AnimeHomeView(mode: $homeMode)
+                } else {
+                    // One screen per mode (.id): switching between webtoons and mangas reloads the lists.
+                    HomeView(mode: $homeMode).id(homeMode)
                 }
             }
             .tag(AppTab.home).toolbar(.hidden, for: .tabBar)
             Group {
-                if homeMode == .manga { SearchView() } else { AnimeSearchView() }
+                if homeMode == .anime { AnimeSearchView() } else { SearchView(mode: homeMode).id(homeMode) }
             }
             .tag(AppTab.search).toolbar(.hidden, for: .tabBar)
             Group {
-                if homeMode == .manga { LibraryView() } else { AnimeLibraryView() }
+                if homeMode == .anime { AnimeLibraryView() } else { LibraryView(mode: homeMode) }
             }
             .tag(AppTab.library).toolbar(.hidden, for: .tabBar)
             DownloadsView(mode: homeMode).tag(AppTab.downloads).toolbar(.hidden, for: .tabBar)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             FloatingTabBar(selection: $tab, badges: [
-                .library: homeMode == .manga ? library.newChapterCount : 0,
-                .downloads: homeMode == .manga ? downloads.jobs.count : episodeDownloads.jobs.count
+                .library: homeMode == .anime ? 0 : library.newChapters.filter { homeMode.accepts($0.manga) }.count,
+                .downloads: homeMode == .anime ? episodeDownloads.jobs.count : downloads.jobs.filter { homeMode.accepts($0.manga) }.count
             ])
         }
         .background(Theme.background)

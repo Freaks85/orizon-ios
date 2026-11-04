@@ -20,6 +20,15 @@ struct MangaSummary: Codable, Hashable, Identifiable {
 
     var id: String { slug }
 
+    /// Korean manhwa, Chinese manhua: read as vertical webtoons. By country of origin, else by the
+    /// kind label (titles saved from a details screen have no country).
+    var isWebtoon: Bool {
+        if let country, !country.isEmpty {
+            return ["KR", "CN", "TW", "HK"].contains(country.uppercased())
+        }
+        return kind == "Manhwa" || kind == "Manhua"
+    }
+
     var flag: String? {
         guard let country, country.count == 2 else { return nil }
         let base: UInt32 = 127397
