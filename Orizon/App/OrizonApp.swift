@@ -70,8 +70,8 @@ struct RootView: View {
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var episodeDownloads: EpisodeDownloads
     @State private var tab: AppTab = .home
-    /// Remembered between launches.
-    @AppStorage("homeMode") private var homeMode: HomeMode = .manga
+    /// The app always opens on webtoons.
+    @State private var homeMode: HomeMode = .webtoon
 
     var body: some View {
         TabView(selection: $tab) {
@@ -85,7 +85,7 @@ struct RootView: View {
             }
             .tag(AppTab.home).toolbar(.hidden, for: .tabBar)
             Group {
-                if homeMode == .anime { AnimeSearchView() } else { SearchView(mode: homeMode).id(homeMode) }
+                if homeMode == .anime { AnimeSearchView(mode: $homeMode) } else { SearchView(mode: $homeMode).id(homeMode) }
             }
             .tag(AppTab.search).toolbar(.hidden, for: .tabBar)
             Group {
